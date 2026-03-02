@@ -54,19 +54,30 @@ class HardlinerBidding(BiddingStrategy):
 
 
 class RandomAboveThresholdBidding(BiddingStrategy):
-    """Generates random offers meeting the utility function's reserved value."""
+    """Generates random offers meeting a specified utility threshold."""
     
+    def __init__(self, threshold: float = 0.9):
+        """
+        Args:
+            threshold: The target minimum utility acceptable for generated bids.
+        """
+        self.threshold = threshold
+        
     def generate(self, state: SAOState, ufun: UtilityFunction, nmi: Any) -> Optional[Outcome]:
+        # Always propose the absolute best outcome on the first step
         if state.step == 0:
             return ufun.extreme_outcomes()[1]
 
-        floor_utility = float(ufun.reserved_value)
+        # Use the maximum of our requested threshold and the absolute minimum reserved value
+        target_threshold = max(float(ufun.reserved_value), self.threshold)
 
+        # Attempt to find a random outcome that meets the threshold
         for _ in range(1000):
             candidate = nmi.random_outcome()
-            if float(ufun(candidate)) >= floor_utility:
+            if float(ufun(candidate)) >= target_threshold:
                 return candidate
                 
+        # Fallback to the best outcome if no random outcome meets the criteria after 1000 tries
         return ufun.extreme_outcomes()[1]
 
 
