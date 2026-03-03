@@ -7,6 +7,7 @@ import math
 import random
 import inspect
 import itertools
+import concurrent.futures
 from collections import deque
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple, cast
@@ -97,16 +98,13 @@ class AgentConfig:
 def _safe_mkdir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
-
 def _now_stamp() -> str:
     return time.strftime("%Y%m%d_%H%M%S")
-
 
 def _bar(x: float, width: int = 18) -> str:
     x = max(0.0, min(1.0, x))
     full = int(round(x * width))
     return "█" * full + "░" * (width - full)
-
 
 def _filter_kwargs_for_callable(callable_obj: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
     try:
@@ -119,22 +117,18 @@ def _filter_kwargs_for_callable(callable_obj: Any, kwargs: Dict[str, Any]) -> Di
             accepted[k] = v
     return accepted
 
-
 def _instantiate(cls: Any, params: Dict[str, Any]) -> Any:
-    # Try with filtered kwargs, then fall back to no-arg.
     filtered = _filter_kwargs_for_callable(cls, params)
     try:
         return cls(**filtered)
     except TypeError:
         return cls()
 
-
 def _discover_subclasses(module_obj: Any, base_cls: Any) -> List[Any]:
     out = []
     for _, obj in inspect.getmembers(module_obj, inspect.isclass):
         if obj is base_cls:
             continue
-        # Skip abstract base classes so we only return concrete implementations
         try:
             if inspect.isabstract(obj):
                 continue
@@ -145,7 +139,6 @@ def _discover_subclasses(module_obj: Any, base_cls: Any) -> List[Any]:
                 out.append(obj)
         except TypeError:
             continue
-    # deterministic ordering
     out.sort(key=lambda c: (c.__module__, c.__name__))
     return out
 
@@ -155,7 +148,6 @@ def _discover_subclasses(module_obj: Any, base_cls: Any) -> List[Any]:
 # -----------------------------
 
 def discover_strategies() -> Tuple[List[StrategySpec], List[StrategySpec], List[StrategySpec]]:
-    # Import the concrete modules to search for subclasses.
     import components.acceptance as acc_mod
     import components.bidding as bid_mod
     import components.opponent_model as opp_mod
@@ -164,7 +156,6 @@ def discover_strategies() -> Tuple[List[StrategySpec], List[StrategySpec], List[
     bid_classes = _discover_subclasses(bid_mod, BiddingStrategy)
     opp_classes = _discover_subclasses(opp_mod, OpponentModel)
 
-    # Default parameter grids
     acceptance_specs: List[StrategySpec] = []
     for c in acc_classes:
         if "threshold" in (inspect.signature(c).parameters if _has_signature(c) else {}):
@@ -212,14 +203,12 @@ def discover_strategies() -> Tuple[List[StrategySpec], List[StrategySpec], List[
 
     return acceptance_specs, bidding_specs, opponent_specs
 
-
 def _has_signature(callable_obj: Any) -> bool:
     try:
         inspect.signature(callable_obj)
         return True
     except (TypeError, ValueError):
         return False
-
 
 def _signature_params(callable_obj: Any) -> Dict[str, Any]:
     if not _has_signature(callable_obj):
@@ -241,7 +230,6 @@ def make_scenario_domain(s: ScenarioConfig, seed: int):
     ufun_b = LUFun.random(issues=cast(List[Any], issues), reserved_value=(rmin, rmax))
     return issues, ufun_a, ufun_b
 
-
 def build_agent(cfg: AgentConfig, name: str):
     acc_cls = getattr(__import__(cfg.acceptance.module, fromlist=[cfg.acceptance.cls_name]), cfg.acceptance.cls_name)
     bid_cls = getattr(__import__(cfg.bidding.module, fromlist=[cfg.bidding.cls_name]), cfg.bidding.cls_name)
@@ -257,7 +245,6 @@ def build_agent(cfg: AgentConfig, name: str):
         bidding_strategy=bid,
         opponent_model=opp,
     )
-
 
 def run_one_session(
     cfg_a: AgentConfig,
@@ -313,7 +300,6 @@ def make_tui_report(console: Console, df_raw: pd.DataFrame, out_dir: str) -> Non
         console.print("[red]No results produced.[/red]")
         return
 
-    # Pair-level summary
     pair_summary = (
         df_raw.groupby(["scenario", "cfg_a", "cfg_b"], as_index=False)
         .agg(
@@ -328,7 +314,6 @@ def make_tui_report(console: Console, df_raw: pd.DataFrame, out_dir: str) -> Non
         )
     )
 
-    # Agent-level summary (pool role A and role B)
     a_view = df_raw[["scenario", "cfg_a", "agreement", "utility_a", "steps_taken"]].copy()
     a_view.rename(columns={"cfg_a": "agent", "utility_a": "utility"}, inplace=True)
     b_view = df_raw[["scenario", "cfg_b", "agreement", "utility_b", "steps_taken"]].copy()
@@ -348,7 +333,6 @@ def make_tui_report(console: Console, df_raw: pd.DataFrame, out_dir: str) -> Non
 
     for scenario in sorted(df_raw["scenario"].unique()):
         top = agent_summary[agent_summary["scenario"] == scenario].head(10)
-
         t = Table(title=f"Top 10 agents — {scenario}", show_lines=False)
         t.add_column("Rank", justify="right")
         t.add_column("Agent", overflow="fold")
@@ -360,16 +344,9 @@ def make_tui_report(console: Console, df_raw: pd.DataFrame, out_dir: str) -> Non
             agree = float(cast(float, row.agreement_rate))
             mu = float(cast(float, row.mean_utility))
             ms = float(cast(float, row.mean_steps))
-            t.add_row(
-                str(i),
-                str(row.agent),
-                f"{agree:0.2f} {_bar(agree)}",
-                f"{mu:0.3f}",
-                f"{ms:0.1f}",
-            )
+            t.add_row(str(i), str(row.agent), f"{agree:0.2f} {_bar(agree)}", f"{mu:0.3f}", f"{ms:0.1f}")
         console.print(t)
 
-    # Overall summary
     overall = (
         agent_rows.groupby(["agent"], as_index=False)
         .agg(
@@ -388,17 +365,13 @@ def make_tui_report(console: Console, df_raw: pd.DataFrame, out_dir: str) -> Non
     t2.add_column("Agree", justify="right")
     t2.add_column("MeanU", justify="right")
     t2.add_column("MeanSteps", justify="right")
+    
     for i, row in enumerate(overall.itertuples(index=False), start=1):
         agree = float(cast(float, row.agreement_rate))
         meanu = float(cast(float, row.mean_utility))
         means = float(cast(float, row.mean_steps))
-        t2.add_row(
-            str(i),
-            str(row.agent),
-            f"{agree:0.2f} {_bar(agree)}",
-            f"{meanu:0.3f}",
-            f"{means:0.1f}",
-        )
+        t2.add_row(str(i), str(row.agent), f"{agree:0.2f} {_bar(agree)}", f"{meanu:0.3f}", f"{means:0.1f}")
+    
     console.print(t2)
 
     pair_summary.to_csv(os.path.join(out_dir, "pair_summary.csv"), index=False)
@@ -417,7 +390,6 @@ def build_default_scenarios() -> List[ScenarioConfig]:
         ScenarioConfig(name="S_large", n_issues=5, n_values=80, n_steps=160, reserved_min=0.0, reserved_max=0.2, domain_seed=3),
     ]
 
-
 def main():
     import argparse
 
@@ -426,8 +398,9 @@ def main():
     parser.add_argument("--reps", type=int, default=3, help="Repetitions per pair per scenario")
     parser.add_argument("--no-swap", action="store_true", help="Disable swapping utility assignments")
     parser.add_argument("--self-play", action="store_true", help="Include cfg vs itself")
-    parser.add_argument("--max-pairs", type=int, default=None, help="Optional cap on number of pairs (debugging)")
+    parser.add_argument("--max-pairs", type=int, default=None, help="Optional cap on number of pairs")
     parser.add_argument("--seed", type=int, default=2026, help="Base RNG seed")
+    parser.add_argument("--speed", type=float, default=1.0, help="UI Simulation speed. 0.05=Slow, 1.0=Normal, >2.0=Hyperfast Multiprocessing")
     args = parser.parse_args()
 
     tcfg = TournamentConfig(
@@ -447,12 +420,7 @@ def main():
     scenarios = build_default_scenarios()
     acc_specs, bid_specs, opp_specs = discover_strategies()
 
-    configs: List[AgentConfig] = [
-        AgentConfig(a, b, o)
-        for a in acc_specs
-        for b in bid_specs
-        for o in opp_specs
-    ]
+    configs: List[AgentConfig] = [AgentConfig(a, b, o) for a in acc_specs for b in bid_specs for o in opp_specs]
 
     if tcfg.include_self_play:
         pairs = list(itertools.combinations_with_replacement(configs, 2))
@@ -475,80 +443,77 @@ def main():
         json.dump(meta, f, indent=2)
 
     console.print(Panel.fit(
-        f"Configs: {len(configs)}\nPairs: {len(pairs)}\nScenarios: {len(scenarios)}\nReps/pair: {tcfg.reps_per_pair}\nSwap sides: {tcfg.swap_sides}",
+        f"Configs: {len(configs)}\nPairs: {len(pairs)}\nScenarios: {len(scenarios)}\nReps/pair: {tcfg.reps_per_pair}\nHyperfast Mode: {'Yes' if args.speed > 2.0 else 'No'}",
         title="Tournament Plan Details", border_style="cyan"
     ))
 
-    total_jobs = len(scenarios) * len(pairs)
-    job_iter = (
-        (scenario, i, cfg_a, cfg_b)
-        for scenario in scenarios
-        for i, (cfg_a, cfg_b) in enumerate(pairs)
-    )
-
-    rows: List[Dict[str, Any]] = []
+    # Pre-calculate flat task list so we can distribute or loop it cleanly
+    tasks: List[Tuple[AgentConfig, AgentConfig, ScenarioConfig, int, bool]] = []
+    for scenario in scenarios:
+        for i, (cfg_a, cfg_b) in enumerate(pairs):
+            duel_seed = tcfg.base_seed + 1000000 * (hash(scenario.name) % 1000) + i * 37
+            for r in range(tcfg.reps_per_pair):
+                swaps = (False, True) if tcfg.swap_sides else (False,)
+                for swap in swaps:
+                    seed = duel_seed + 1000 * r + (1 if swap else 0)
+                    tasks.append((cfg_a, cfg_b, scenario, seed, swap))
 
     # -----------------------------
     # Live TUI State & Components
     # -----------------------------
     
-    # Store running totals for real-time leaderboard
     agent_stats = {cfg.name: {"matches": 0, "utility_sum": 0.0, "agreements": 0} for cfg in configs}
-    feed_messages = deque(maxlen=12)  # Holds last N match updates
+    feed_messages = deque(maxlen=12) 
     
-    # Formats a condensed agent name for the feed to prevent ugly wrapping
-    def short_name(name: str) -> str:
-        parts = name.split("|")
+    def short_name(name_str: str) -> str:
+        parts = name_str.split("|")
         if len(parts) >= 2:
-            return parts[1].replace("Bidding", "").strip()
-        return name
+            return parts[1].replace("B:", "").replace("Bidding", "").strip()
+        return name_str
 
-    def make_leaderboard_panel() -> Panel:
-        table = Table(show_lines=False, expand=True, box=None)
-        table.add_column("Rank", justify="right", style="cyan")
-        table.add_column("Agent", overflow="fold")
-        table.add_column("Agree", justify="right")
-        table.add_column("MeanU", justify="right", style="bold green")
+    # Dynamic Renderable Classes (these are polled automatically by Live)
+    class LeaderboardView:
+        def __rich__(self) -> Panel:
+            table = Table(show_lines=False, expand=True, box=None)
+            table.add_column("Rank", justify="right", style="cyan")
+            table.add_column("Agent", overflow="fold")
+            table.add_column("Agree", justify="right")
+            table.add_column("MeanU", justify="right", style="bold green")
 
-        leaderboard = []
-        for agent, stats in agent_stats.items():
-            if stats["matches"] > 0:
-                mean_u = stats["utility_sum"] / stats["matches"]
-                agree_rate = stats["agreements"] / stats["matches"]
-                leaderboard.append((mean_u, agree_rate, agent))
+            leaderboard = []
+            for agent, stats in agent_stats.items():
+                if stats["matches"] > 0:
+                    mean_u = stats["utility_sum"] / stats["matches"]
+                    agree_rate = stats["agreements"] / stats["matches"]
+                    leaderboard.append((mean_u, agree_rate, agent))
 
-        # Sort strictly by Mean Utility
-        leaderboard.sort(key=lambda x: x[0], reverse=True)
+            leaderboard.sort(key=lambda x: x[0], reverse=True)
 
-        for i, (mean_u, agree_rate, agent) in enumerate(leaderboard[:10], start=1):
-            table.add_row(
-                str(i),
-                agent,
-                f"{agree_rate:0.2f} {_bar(agree_rate, 8)}",
-                f"{mean_u:0.3f}"
-            )
-        return Panel(table, title="🏆 Live Overall Top 10 (Mean Utility)", border_style="gold1")
+            for i, (mean_u, agree_rate, agent) in enumerate(leaderboard[:10], start=1):
+                table.add_row(str(i), agent, f"{agree_rate:0.2f} {_bar(agree_rate, 8)}", f"{mean_u:0.3f}")
+            return Panel(table, title="🏆 Live Overall Top 10 (Mean Utility)", border_style="gold1")
 
-    def make_feed_panel() -> Panel:
-        table = Table(show_header=False, box=None, expand=True)
-        table.add_column("Match Info")
-        # Reverse to show newest at the top
-        for msg in reversed(feed_messages):
-            table.add_row(msg)
-        return Panel(table, title="📡 Live Match Feed", border_style="blue")
+    class FeedView:
+        def __rich__(self) -> Panel:
+            table = Table(show_header=False, box=None, expand=True)
+            table.add_column("Match Info")
+            for msg in reversed(feed_messages):
+                table.add_row(msg)
+            return Panel(table, title="📡 Live Match Feed", border_style="blue")
 
-    # Set up the visual Layout blocks
+    class HeaderView:
+        def __rich__(self) -> Panel:
+            return Panel(progress, title="Tournament Progress", border_style="green")
+
     layout = Layout()
-    layout.split_column(
-        Layout(name="header", size=5),
-        Layout(name="main", ratio=1)
-    )
-    layout["main"].split_row(
-        Layout(name="leaderboard", ratio=6),
-        Layout(name="feed", ratio=4)
-    )
+    layout.split_column(Layout(name="header", size=5), Layout(name="main", ratio=1))
+    layout["main"].split_row(Layout(name="leaderboard", ratio=6), Layout(name="feed", ratio=4))
+    
+    # Assign dynamic views
+    layout["header"].update(HeaderView())
+    layout["leaderboard"].update(LeaderboardView())
+    layout["feed"].update(FeedView())
 
-    # Header Progress Bar
     progress = Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -560,51 +525,56 @@ def main():
         TimeRemainingColumn(),
         expand=True
     )
-    task_id = progress.add_task("[bold white]Running Tournament Pairs...", total=total_jobs)
+    task_id = progress.add_task("[bold white]Running Tournament Pairs...", total=len(tasks))
     
+    rows: List[Dict[str, Any]] = []
+
+    def update_ui_state(row: Dict[str, Any]):
+        for agent_key, util_key in [("cfg_a", "utility_a"), ("cfg_b", "utility_b")]:
+            ag = row[agent_key]
+            agent_stats[ag]["matches"] += 1
+            agent_stats[ag]["utility_sum"] += row[util_key]
+            if row["agreement"]:
+                agent_stats[ag]["agreements"] += 1
+        
+        if row["agreement"]:
+            if row["utility_a"] > 0.9 or row["utility_b"] > 0.9:
+                status = f"🔥 [bold green]Hardball Deal! ({row['utility_a']:.2f}, {row['utility_b']:.2f})[/]"
+            else:
+                status = f"✅ [green]Deal ({row['utility_a']:.2f}, {row['utility_b']:.2f})[/]"
+        else:
+            status = "❌ [red]Timeout / Walkaway[/]"
+        
+        feed_text = f"[dim][{row['scenario']}][/]\n{status}\n{short_name(row['cfg_a'])} vs {short_name(row['cfg_b'])}\n"
+        feed_messages.append(feed_text)
+        progress.advance(task_id, 1)
+
     # -----------------------------
     # Live Execution Loop
     # -----------------------------
     
-    with Live(layout, console=console, refresh_per_second=8) as live:
-        for scenario, i, cfg_a, cfg_b in job_iter:
-            duel_seed = tcfg.base_seed + 1000000 * (hash(scenario.name) % 1000) + i * 37
-            
-            for r in range(tcfg.reps_per_pair):
-                
-                # Handle swapping utilities internally
-                swaps = (False, True) if tcfg.swap_sides else (False,)
-                
-                for swap in swaps:
-                    seed = duel_seed + 1000 * r + (1 if swap else 0)
-                    row = run_one_session(cfg_a, cfg_b, scenario, seed=seed, swap_ufuns=swap)
-                    rows.append(row)
-                    
-                    # 1. Update live statistical memory
-                    for agent_key, util_key in [("cfg_a", "utility_a"), ("cfg_b", "utility_b")]:
-                        ag = row[agent_key]
-                        agent_stats[ag]["matches"] += 1
-                        agent_stats[ag]["utility_sum"] += row[util_key]
-                        if row["agreement"]:
-                            agent_stats[ag]["agreements"] += 1
-                    
-                    # 2. Add an event to the match feed
-                    if row["agreement"]:
-                        if row["utility_a"] > 0.9 or row["utility_b"] > 0.9:
-                            status = f"🔥 [bold green]Hardball Deal! ({row['utility_a']:.2f}, {row['utility_b']:.2f})[/]"
-                        else:
-                            status = f"✅ [green]Deal ({row['utility_a']:.2f}, {row['utility_b']:.2f})[/]"
-                    else:
-                        status = "❌ [red]Timeout / Walkaway[/]"
-                    
-                    feed_text = f"[dim][{scenario.name}][/]\n{status}\n{short_name(cfg_a.name)} vs {short_name(cfg_b.name)}\n"
-                    feed_messages.append(feed_text)
-            
-            # 3. Update the visual layout frames
-            progress.advance(task_id, 1)
-            layout["header"].update(Panel(progress, title="Tournament Progress", border_style="green"))
-            layout["leaderboard"].update(make_leaderboard_panel())
-            layout["feed"].update(make_feed_panel())
+    with Live(layout, console=console, refresh_per_second=12) as live:
+        if args.speed > 2.0:
+            # HYPERFAST MODE: Multiprocessing
+            with concurrent.futures.ProcessPoolExecutor() as executor:
+                futures = [executor.submit(run_one_session, *t) for t in tasks]
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        row = future.result()
+                        rows.append(row)
+                        update_ui_state(row)
+                    except Exception as e:
+                        feed_messages.append(f"⚠️ [red]Match Error: {str(e)}[/red]")
+                        progress.advance(task_id, 1)
+        else:
+            # SEQUENTIAL MODE: Artificial Delay
+            delay = max(0.0, 0.1 / args.speed - 0.05)
+            for t in tasks:
+                row = run_one_session(*t)
+                rows.append(row)
+                update_ui_state(row)
+                if delay > 0:
+                    time.sleep(delay)
 
     # -----------------------------
     # Post-Tournament Execution
