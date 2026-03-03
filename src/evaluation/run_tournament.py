@@ -7,6 +7,7 @@ import math
 import random
 import inspect
 import itertools
+from collections import deque
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple, cast
 
@@ -14,7 +15,16 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.progress import track
+from rich.live import Live
+from rich.layout import Layout
+from rich.progress import (
+    Progress, 
+    BarColumn, 
+    TextColumn, 
+    TimeElapsedColumn, 
+    TimeRemainingColumn, 
+    SpinnerColumn
+)
 
 # Ensure src/ is importable (same idea as your current script)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -154,10 +164,9 @@ def discover_strategies() -> Tuple[List[StrategySpec], List[StrategySpec], List[
     bid_classes = _discover_subclasses(bid_mod, BiddingStrategy)
     opp_classes = _discover_subclasses(opp_mod, OpponentModel)
 
-    # Default parameter grids (extend as you like)
+    # Default parameter grids
     acceptance_specs: List[StrategySpec] = []
     for c in acc_classes:
-        # Example: try a few thresholds if the class supports it
         if "threshold" in (inspect.signature(c).parameters if _has_signature(c) else {}):
             for thr in (0.6, 0.7, 0.8, 0.9):
                 acceptance_specs.append(StrategySpec("acceptance", c.__name__, c.__module__, {"threshold": thr}))
@@ -167,7 +176,6 @@ def discover_strategies() -> Tuple[List[StrategySpec], List[StrategySpec], List[
     bidding_specs: List[StrategySpec] = []
     for c in bid_classes:
         params = {}
-        # Some of your bidding strategies have optional knobs; sample a small grid
         sig = _signature_params(c)
         if "steps" in sig:
             for s in (3, 5, 8):
@@ -202,9 +210,6 @@ def discover_strategies() -> Tuple[List[StrategySpec], List[StrategySpec], List[
     for c in opp_classes:
         opponent_specs.append(StrategySpec("opponent_model", c.__name__, c.__module__, {}))
 
-    # If you want smaller tournaments, you can cap here:
-    # bidding_specs = bidding_specs[:10]
-
     return acceptance_specs, bidding_specs, opponent_specs
 
 
@@ -229,18 +234,15 @@ def _signature_params(callable_obj: Any) -> Dict[str, Any]:
 def make_scenario_domain(s: ScenarioConfig, seed: int):
     rng = random.Random(seed)
     issues = [make_issue(name=f"{s.name}_Issue_{i}", values=s.n_values) for i in range(s.n_issues)]
-    # LUFun.random accepts reserved_value as a number or range (your current code uses a tuple)
     rmin = min(s.reserved_min, s.reserved_max)
     rmax = max(s.reserved_min, s.reserved_max)
-    # Add tiny seed noise so A/B ufuns differ even with same scenario seed
-    # Cast `issues` to a non-variant typed list to satisfy static checkers
+    
     ufun_a = LUFun.random(issues=cast(List[Any], issues), reserved_value=(rmin, rmax))
     ufun_b = LUFun.random(issues=cast(List[Any], issues), reserved_value=(rmin, rmax))
     return issues, ufun_a, ufun_b
 
 
 def build_agent(cfg: AgentConfig, name: str):
-    # dynamic import by module path stored in StrategySpec
     acc_cls = getattr(__import__(cfg.acceptance.module, fromlist=[cfg.acceptance.cls_name]), cfg.acceptance.cls_name)
     bid_cls = getattr(__import__(cfg.bidding.module, fromlist=[cfg.bidding.cls_name]), cfg.bidding.cls_name)
     opp_cls = getattr(__import__(cfg.opponent_model.module, fromlist=[cfg.opponent_model.cls_name]), cfg.opponent_model.cls_name)
@@ -265,8 +267,6 @@ def run_one_session(
     swap_ufuns: bool,
 ) -> Dict[str, Any]:
     issues, ufun1, ufun2 = make_scenario_domain(scenario, seed)
-
-    # Swap only utility assignments to mitigate "who got which preference draw"
     ufun_a, ufun_b = (ufun2, ufun1) if swap_ufuns else (ufun1, ufun2)
 
     mech = SAOMechanism(issues=issues, n_steps=scenario.n_steps)
@@ -280,7 +280,6 @@ def run_one_session(
     state = mech.run()
     agreement = state.agreement
 
-    # Ensure we convert potential numpy/pandas scalar results to Python floats
     ua = float(cast(float, ufun_a(agreement))) if agreement is not None else float(cast(float, ufun_a.reserved_value))
     ub = float(cast(float, ufun_b(agreement))) if agreement is not None else float(cast(float, ufun_b.reserved_value))
 
@@ -301,23 +300,6 @@ def run_one_session(
         "fairness_absdiff": abs(ua - ub),
         "nash_product": max(0.0, ua) * max(0.0, ub),
     }
-
-
-def run_duel(
-    cfg_a: AgentConfig,
-    cfg_b: AgentConfig,
-    scenario: ScenarioConfig,
-    base_seed: int,
-    reps: int,
-    swap_sides: bool,
-) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
-    for r in range(reps):
-        seed = base_seed + 100000 * (hash(scenario.name) % 1000) + 1000 * r
-        rows.append(run_one_session(cfg_a, cfg_b, scenario, seed=seed, swap_ufuns=False))
-        if swap_sides:
-            rows.append(run_one_session(cfg_a, cfg_b, scenario, seed=seed + 1, swap_ufuns=True))
-    return rows
 
 
 # -----------------------------
@@ -364,7 +346,6 @@ def make_tui_report(console: Console, df_raw: pd.DataFrame, out_dir: str) -> Non
         .sort_values(["scenario", "mean_utility"], ascending=[True, False])
     )
 
-    # Print top agents per scenario
     for scenario in sorted(df_raw["scenario"].unique()):
         top = agent_summary[agent_summary["scenario"] == scenario].head(10)
 
@@ -388,7 +369,7 @@ def make_tui_report(console: Console, df_raw: pd.DataFrame, out_dir: str) -> Non
             )
         console.print(t)
 
-    # Overall summary across scenarios
+    # Overall summary
     overall = (
         agent_rows.groupby(["agent"], as_index=False)
         .agg(
@@ -420,7 +401,6 @@ def make_tui_report(console: Console, df_raw: pd.DataFrame, out_dir: str) -> Non
         )
     console.print(t2)
 
-    # Save aggregated outputs
     pair_summary.to_csv(os.path.join(out_dir, "pair_summary.csv"), index=False)
     agent_summary.to_csv(os.path.join(out_dir, "agent_summary_by_scenario.csv"), index=False)
     overall.to_csv(os.path.join(out_dir, "agent_overall_top15.csv"), index=False)
@@ -474,7 +454,6 @@ def main():
         for o in opp_specs
     ]
 
-    # Build pairs
     if tcfg.include_self_play:
         pairs = list(itertools.combinations_with_replacement(configs, 2))
     else:
@@ -483,7 +462,6 @@ def main():
     if tcfg.max_pairs is not None:
         pairs = pairs[: max(0, tcfg.max_pairs)]
 
-    # Save tournament config + strategy inventories
     meta = {
         "tournament_config": asdict(tcfg),
         "scenarios": [asdict(s) for s in scenarios],
@@ -492,44 +470,153 @@ def main():
         "n_opponent_specs": len(opp_specs),
         "n_agent_configs": len(configs),
         "n_pairs": len(pairs),
-        "acceptance_specs": [asdict(s) for s in acc_specs],
-        "bidding_specs": [asdict(s) for s in bid_specs],
-        "opponent_specs": [asdict(s) for s in opp_specs],
     }
     with open(os.path.join(stamp_dir, "tournament_meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
     console.print(Panel.fit(
         f"Configs: {len(configs)}\nPairs: {len(pairs)}\nScenarios: {len(scenarios)}\nReps/pair: {tcfg.reps_per_pair}\nSwap sides: {tcfg.swap_sides}",
-        title="Tournament plan"
+        title="Tournament Plan Details", border_style="cyan"
     ))
 
-    rows: List[Dict[str, Any]] = []
     total_jobs = len(scenarios) * len(pairs)
-
     job_iter = (
         (scenario, i, cfg_a, cfg_b)
         for scenario in scenarios
         for i, (cfg_a, cfg_b) in enumerate(pairs)
     )
 
-    for scenario, i, cfg_a, cfg_b in track(job_iter, total=total_jobs, description="Running matches"):
-        duel_seed = tcfg.base_seed + 1000000 * (hash(scenario.name) % 1000) + i * 37
-        for r in range(tcfg.reps_per_pair):
-            seed = duel_seed + 1000 * r
-            rows.append(run_one_session(cfg_a, cfg_b, scenario, seed=seed, swap_ufuns=False))
-            if tcfg.swap_sides:
-                rows.append(run_one_session(cfg_a, cfg_b, scenario, seed=seed + 1, swap_ufuns=True))
+    rows: List[Dict[str, Any]] = []
+
+    # -----------------------------
+    # Live TUI State & Components
+    # -----------------------------
+    
+    # Store running totals for real-time leaderboard
+    agent_stats = {cfg.name: {"matches": 0, "utility_sum": 0.0, "agreements": 0} for cfg in configs}
+    feed_messages = deque(maxlen=12)  # Holds last N match updates
+    
+    # Formats a condensed agent name for the feed to prevent ugly wrapping
+    def short_name(name: str) -> str:
+        parts = name.split("|")
+        if len(parts) >= 2:
+            return parts[1].replace("Bidding", "").strip()
+        return name
+
+    def make_leaderboard_panel() -> Panel:
+        table = Table(show_lines=False, expand=True, box=None)
+        table.add_column("Rank", justify="right", style="cyan")
+        table.add_column("Agent", overflow="fold")
+        table.add_column("Agree", justify="right")
+        table.add_column("MeanU", justify="right", style="bold green")
+
+        leaderboard = []
+        for agent, stats in agent_stats.items():
+            if stats["matches"] > 0:
+                mean_u = stats["utility_sum"] / stats["matches"]
+                agree_rate = stats["agreements"] / stats["matches"]
+                leaderboard.append((mean_u, agree_rate, agent))
+
+        # Sort strictly by Mean Utility
+        leaderboard.sort(key=lambda x: x[0], reverse=True)
+
+        for i, (mean_u, agree_rate, agent) in enumerate(leaderboard[:10], start=1):
+            table.add_row(
+                str(i),
+                agent,
+                f"{agree_rate:0.2f} {_bar(agree_rate, 8)}",
+                f"{mean_u:0.3f}"
+            )
+        return Panel(table, title="🏆 Live Overall Top 10 (Mean Utility)", border_style="gold1")
+
+    def make_feed_panel() -> Panel:
+        table = Table(show_header=False, box=None, expand=True)
+        table.add_column("Match Info")
+        # Reverse to show newest at the top
+        for msg in reversed(feed_messages):
+            table.add_row(msg)
+        return Panel(table, title="📡 Live Match Feed", border_style="blue")
+
+    # Set up the visual Layout blocks
+    layout = Layout()
+    layout.split_column(
+        Layout(name="header", size=5),
+        Layout(name="main", ratio=1)
+    )
+    layout["main"].split_row(
+        Layout(name="leaderboard", ratio=6),
+        Layout(name="feed", ratio=4)
+    )
+
+    # Header Progress Bar
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+        TextColumn("•"),
+        TimeRemainingColumn(),
+        expand=True
+    )
+    task_id = progress.add_task("[bold white]Running Tournament Pairs...", total=total_jobs)
+    
+    # -----------------------------
+    # Live Execution Loop
+    # -----------------------------
+    
+    with Live(layout, console=console, refresh_per_second=8) as live:
+        for scenario, i, cfg_a, cfg_b in job_iter:
+            duel_seed = tcfg.base_seed + 1000000 * (hash(scenario.name) % 1000) + i * 37
+            
+            for r in range(tcfg.reps_per_pair):
+                
+                # Handle swapping utilities internally
+                swaps = (False, True) if tcfg.swap_sides else (False,)
+                
+                for swap in swaps:
+                    seed = duel_seed + 1000 * r + (1 if swap else 0)
+                    row = run_one_session(cfg_a, cfg_b, scenario, seed=seed, swap_ufuns=swap)
+                    rows.append(row)
+                    
+                    # 1. Update live statistical memory
+                    for agent_key, util_key in [("cfg_a", "utility_a"), ("cfg_b", "utility_b")]:
+                        ag = row[agent_key]
+                        agent_stats[ag]["matches"] += 1
+                        agent_stats[ag]["utility_sum"] += row[util_key]
+                        if row["agreement"]:
+                            agent_stats[ag]["agreements"] += 1
+                    
+                    # 2. Add an event to the match feed
+                    if row["agreement"]:
+                        if row["utility_a"] > 0.9 or row["utility_b"] > 0.9:
+                            status = f"🔥 [bold green]Hardball Deal! ({row['utility_a']:.2f}, {row['utility_b']:.2f})[/]"
+                        else:
+                            status = f"✅ [green]Deal ({row['utility_a']:.2f}, {row['utility_b']:.2f})[/]"
+                    else:
+                        status = "❌ [red]Timeout / Walkaway[/]"
+                    
+                    feed_text = f"[dim][{scenario.name}][/]\n{status}\n{short_name(cfg_a.name)} vs {short_name(cfg_b.name)}\n"
+                    feed_messages.append(feed_text)
+            
+            # 3. Update the visual layout frames
+            progress.advance(task_id, 1)
+            layout["header"].update(Panel(progress, title="Tournament Progress", border_style="green"))
+            layout["leaderboard"].update(make_leaderboard_panel())
+            layout["feed"].update(make_feed_panel())
+
+    # -----------------------------
+    # Post-Tournament Execution
+    # -----------------------------
 
     df_raw = pd.DataFrame(rows)
     df_raw.to_csv(os.path.join(stamp_dir, "raw_results.csv"), index=False)
 
     make_tui_report(console, df_raw, stamp_dir)
 
-    # Save the same TUI output to file
     console.save_text(os.path.join(stamp_dir, "tournament_report.txt"))
-
-    console.print(Panel.fit(f"Wrote outputs to: {stamp_dir}", title="Done"))
+    console.print(Panel.fit(f"Wrote outputs to: {stamp_dir}", title="Done", border_style="bold green"))
 
 
 if __name__ == "__main__":
