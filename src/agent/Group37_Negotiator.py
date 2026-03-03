@@ -1,3 +1,5 @@
+# type: ignore
+from typing import Optional, Any
 from negmas.sao import SAONegotiator, SAOResponse, ResponseType, SAOState
 from components.acceptance import AcceptanceStrategy, StaticThresholdAcceptance
 from components.bidding import BiddingStrategy, RandomAboveThresholdBidding
@@ -8,10 +10,10 @@ class Group37_Negotiator(SAONegotiator):
     The main negotiating agent utilizing a composition architecture.
     """
     
-    def __init__(self, *args, 
-                 bidding_strategy: BiddingStrategy = None, 
-                 acceptance_strategy: AcceptanceStrategy = None, 
-                 opponent_model: OpponentModel = None, 
+    def __init__(self, *args,
+                 bidding_strategy: Optional[BiddingStrategy] = None,
+                 acceptance_strategy: Optional[AcceptanceStrategy] = None,
+                 opponent_model: Optional[OpponentModel] = None,
                  **kwargs):
         super().__init__(*args, **kwargs)
         
@@ -20,7 +22,7 @@ class Group37_Negotiator(SAONegotiator):
         self.acceptance_strategy = acceptance_strategy or StaticThresholdAcceptance(threshold=0.8)
         self.opponent_model = opponent_model or NoOpponentModel()
 
-    def __call__(self, state: SAOState) -> SAOResponse:
+    def __call__(self, state: SAOState, *args: Any, **kwargs: Any) -> SAOResponse:
         """The main turn cycle called by the NegMAS framework."""
         offer = state.current_offer
 

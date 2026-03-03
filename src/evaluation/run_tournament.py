@@ -1,4 +1,5 @@
 import os
+# type: ignore
 import sys
 import json
 import time
@@ -7,7 +8,7 @@ import random
 import inspect
 import itertools
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, cast
 
 import pandas as pd
 from rich.console import Console
@@ -226,8 +227,9 @@ def make_scenario_domain(s: ScenarioConfig, seed: int):
     rmin = min(s.reserved_min, s.reserved_max)
     rmax = max(s.reserved_min, s.reserved_max)
     # Add tiny seed noise so A/B ufuns differ even with same scenario seed
-    ufun_a = LUFun.random(issues=issues, reserved_value=(rmin, rmax))
-    ufun_b = LUFun.random(issues=issues, reserved_value=(rmin, rmax))
+    # Cast `issues` to a non-variant typed list to satisfy static checkers
+    ufun_a = LUFun.random(issues=cast(List[Any], issues), reserved_value=(rmin, rmax))
+    ufun_b = LUFun.random(issues=cast(List[Any], issues), reserved_value=(rmin, rmax))
     return issues, ufun_a, ufun_b
 
 
@@ -272,8 +274,9 @@ def run_one_session(
     state = mech.run()
     agreement = state.agreement
 
-    ua = float(ufun_a(agreement)) if agreement is not None else float(ufun_a.reserved_value)
-    ub = float(ufun_b(agreement)) if agreement is not None else float(ufun_b.reserved_value)
+    # Ensure we convert potential numpy/pandas scalar results to Python floats
+    ua = float(cast(float, ufun_a(agreement))) if agreement is not None else float(cast(float, ufun_a.reserved_value))
+    ub = float(cast(float, ufun_b(agreement))) if agreement is not None else float(cast(float, ufun_b.reserved_value))
 
     return {
         "scenario": scenario.name,
@@ -305,7 +308,7 @@ def run_duel(
     rows: List[Dict[str, Any]] = []
     for r in range(reps):
         seed = base_seed + 100000 * (hash(scenario.name) % 1000) + 1000 * r
-        rows.append(run_one_session(cfg_a, cfg_b, scenario, seed=seed, swap_ufuns=False, swap_ufuns=False))
+        rows.append(run_one_session(cfg_a, cfg_b, scenario, seed=seed, swap_ufuns=False))
         if swap_sides:
             rows.append(run_one_session(cfg_a, cfg_b, scenario, seed=seed + 1, swap_ufuns=True))
     return rows
@@ -367,9 +370,9 @@ def make_tui_report(console: Console, df_raw: pd.DataFrame, out_dir: str) -> Non
         t.add_column("MeanSteps", justify="right")
 
         for i, row in enumerate(top.itertuples(index=False), start=1):
-            agree = float(row.agreement_rate)
-            mu = float(row.mean_utility)
-            ms = float(row.mean_steps)
+            agree = float(cast(float, row.agreement_rate))
+            mu = float(cast(float, row.mean_utility))
+            ms = float(cast(float, row.mean_steps))
             t.add_row(
                 str(i),
                 str(row.agent),
@@ -399,13 +402,15 @@ def make_tui_report(console: Console, df_raw: pd.DataFrame, out_dir: str) -> Non
     t2.add_column("MeanU", justify="right")
     t2.add_column("MeanSteps", justify="right")
     for i, row in enumerate(overall.itertuples(index=False), start=1):
-        agree = float(row.agreement_rate)
+        agree = float(cast(float, row.agreement_rate))
+        meanu = float(cast(float, row.mean_utility))
+        means = float(cast(float, row.mean_steps))
         t2.add_row(
             str(i),
             str(row.agent),
             f"{agree:0.2f} {_bar(agree)}",
-            f"{float(row.mean_utility):0.3f}",
-            f"{float(row.mean_steps):0.1f}",
+            f"{meanu:0.3f}",
+            f"{means:0.1f}",
         )
     console.print(t2)
 

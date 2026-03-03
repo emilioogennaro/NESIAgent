@@ -1,5 +1,6 @@
 import os
 import sys
+# type: ignore
 
 # Ensure Python can find our 'agents' and 'components' folders
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
