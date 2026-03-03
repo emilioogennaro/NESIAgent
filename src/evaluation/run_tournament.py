@@ -124,6 +124,12 @@ def _discover_subclasses(module_obj: Any, base_cls: Any) -> List[Any]:
     for _, obj in inspect.getmembers(module_obj, inspect.isclass):
         if obj is base_cls:
             continue
+        # Skip abstract base classes so we only return concrete implementations
+        try:
+            if inspect.isabstract(obj):
+                continue
+        except Exception:
+            pass
         try:
             if issubclass(obj, base_cls):
                 out.append(obj)
