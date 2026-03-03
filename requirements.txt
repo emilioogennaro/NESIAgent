@@ -1,0 +1,4 @@
+negmas
+pandas
+rich
+pytest
