@@ -9,9 +9,10 @@ readme = "README.md"
 requires-python = ">=3.7"
 license = {text = "MIT"}
 
-[project.dependencies]
-negmas = "*"
-pytest = {version = "*", optional = false}
+dependencies = [
+    "negmas",
+    "pytest"
+]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
