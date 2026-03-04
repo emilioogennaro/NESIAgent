@@ -13,3 +13,6 @@ dist/
 
 # VSCode
 .vscode/
+
+# Tournamet results and statistics
+tournament_out/

@@ -1,4 +1,6 @@
+# type: ignore
 from abc import ABC, abstractmethod
+from typing import Any
 from negmas import Outcome
 from negmas.sao import SAOState
 from negmas.preferences import UtilityFunction
@@ -7,7 +9,7 @@ class AcceptanceStrategy(ABC):
     """Abstract base class for all acceptance strategies."""
     
     @abstractmethod
-    def evaluate(self, offer: Outcome, state: SAOState, ufun: UtilityFunction) -> bool:
+    def evaluate(self, offer: Any, state: Any, ufun: Any) -> bool:
         """Evaluate the offer and return True to accept, False to reject."""
         pass
 
