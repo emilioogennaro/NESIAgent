@@ -157,13 +157,36 @@ class OpponentAwareBidding(BiddingStrategy):
                     threshold += 0.1  # More demanding
                 elif opponent_type == "conceder":
                     threshold -= 0.1  # More willing to concede
-            
+
             # If opponent concedes slowly, be more patient
             if hasattr(self.opponent_model, 'get_concession_rate'):
                 concession_rate = self.opponent_model.get_concession_rate()
                 if concession_rate < 0.3:  # Hardliner
                     threshold += 0.05
-            
+
+            # Frequency-based modeling (repeated offers)
+            if hasattr(self.opponent_model, 'get_offer_frequency') and state.current_offer is not None:
+                frequency = self.opponent_model.get_offer_frequency(state.current_offer)
+                if frequency > 0.4:
+                    threshold += 0.05
+
+            # Bayesian utility estimation
+            if hasattr(self.opponent_model, 'estimate_utility') and state.current_offer is not None:
+                est = self.opponent_model.estimate_utility(state.current_offer)
+                if est > 0.8:
+                    threshold += 0.05
+                elif est < 0.3:
+                    threshold -= 0.05
+
+            # Strategy prediction for future utility
+            if hasattr(self.opponent_model, 'predict_next_utility'):
+                next_time = min(1.0, (state.relative_time or 0.0) + 0.05)
+                predicted = self.opponent_model.predict_next_utility(ufun, next_time)
+                if predicted > 0.8:
+                    threshold += 0.05
+                elif predicted < 0.3:
+                    threshold -= 0.05
+
             # Consider time pressure based on opponent's predicted behavior
             if hasattr(self.opponent_model, 'predict_concession_point'):
                 next_concession = self.opponent_model.predict_concession_point(state.relative_time)
