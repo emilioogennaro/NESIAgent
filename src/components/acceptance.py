@@ -1,14 +1,16 @@
 # type: ignore
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Optional
 from negmas import Outcome
 from negmas.sao import SAOState
 from negmas.preferences import UtilityFunction
+from .opponent_model import OpponentModel
 
 class AcceptanceStrategy(ABC):
     """Abstract base class for all acceptance strategies."""
     
-    @abstractmethod
+    def __init__(self, opponent_model: Optional[OpponentModel] = None):
+        self.opponent_model = opponent_model
     def evaluate(self, offer: Any, state: Any, ufun: Any) -> bool:
         """Evaluate the offer and return True to accept, False to reject."""
         pass
@@ -21,7 +23,8 @@ class StaticThresholdAcceptance(AcceptanceStrategy):
     Useful for comparison but often performs poorly in realistic negotiations.
     """
     
-    def __init__(self, threshold: float = 0.8):
+    def __init__(self, threshold: float = 0.8, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
         self.threshold = threshold
 
     def evaluate(self, offer: Outcome, state: SAOState, ufun: UtilityFunction) -> bool:
@@ -68,7 +71,52 @@ class AspirationalAcceptance(AcceptanceStrategy):
                      ((1 - time_progress) ** self.e_parameter))
         
         return ufun(offer) >= aspiration
+
+
+class OpponentAwareAcceptance(AcceptanceStrategy):
+    """Acceptance strategy that adapts based on opponent modeling information.
     
+    Uses opponent model to predict opponent behavior and adjust acceptance threshold.
+    Becomes more lenient against hardliners and more demanding against conceders.
+    """
+    
+    def __init__(self, base_threshold: float = 0.8, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
+        self.base_threshold = base_threshold
+    
+    def evaluate(self, offer: Outcome, state: SAOState, ufun: UtilityFunction) -> bool:
+        if offer is None:
+            return False
+        
+        threshold = self.base_threshold
+        
+        # Adjust threshold based on opponent model
+        if self.opponent_model:
+            # If opponent is a hardliner, be more willing to accept reasonable offers
+            if hasattr(self.opponent_model, 'get_opponent_type'):
+                opponent_type = self.opponent_model.get_opponent_type()
+                if opponent_type == "hardliner":
+                    threshold -= 0.1  # More lenient
+                elif opponent_type == "conceder":
+                    threshold += 0.05  # More demanding
+            
+            # If opponent concedes slowly, we might need to be more patient
+            if hasattr(self.opponent_model, 'get_concession_rate'):
+                concession_rate = self.opponent_model.get_concession_rate()
+                if concession_rate < 0.3:  # Hardliner
+                    threshold -= 0.05
+            
+            # If opponent frequently offers this outcome, it might be their target
+            if hasattr(self.opponent_model, 'get_offer_frequency'):
+                frequency = self.opponent_model.get_offer_frequency(offer)
+                if frequency > 0.3:  # Frequently offered
+                    threshold -= 0.05  # More likely to be acceptable
+        
+        # Ensure threshold stays within reasonable bounds
+        threshold = max(0.1, min(0.95, threshold))
+        
+        return ufun(offer) >= threshold
+
 
 class AspirationalAcceptance_Weighted(AcceptanceStrategy):
     """ACnext(α, β) acceptance strategy."""

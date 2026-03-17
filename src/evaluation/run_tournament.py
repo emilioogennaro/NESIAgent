@@ -235,9 +235,17 @@ def build_agent(cfg: AgentConfig, name: str):
     bid_cls = getattr(__import__(cfg.bidding.module, fromlist=[cfg.bidding.cls_name]), cfg.bidding.cls_name)
     opp_cls = getattr(__import__(cfg.opponent_model.module, fromlist=[cfg.opponent_model.cls_name]), cfg.opponent_model.cls_name)
 
-    acc = _instantiate(acc_cls, cfg.acceptance.params)
-    bid = _instantiate(bid_cls, cfg.bidding.params)
     opp = _instantiate(opp_cls, cfg.opponent_model.params)
+    
+    # Pass opponent_model to strategies that support it
+    acc_params = cfg.acceptance.params.copy()
+    acc_params['opponent_model'] = opp
+    
+    bid_params = cfg.bidding.params.copy()
+    bid_params['opponent_model'] = opp
+    
+    acc = _instantiate(acc_cls, acc_params)
+    bid = _instantiate(bid_cls, bid_params)
 
     return Group37_Negotiator(
         name=name,
