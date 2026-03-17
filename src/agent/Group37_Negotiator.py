@@ -18,8 +18,8 @@ class Group37_Negotiator(SAONegotiator):
         super().__init__(*args, **kwargs)
         
         # Instantiate default components if none are explicitly injected
-        self.bidding_strategy = bidding_strategy or RandomAboveThresholdBidding(threshold=0.9)
-        self.acceptance_strategy = acceptance_strategy or StaticThresholdAcceptance(threshold=0.8)
+        self.bidding_strategy = bidding_strategy or RandomAboveThresholdBidding(threshold=0.9, opponent_model=opponent_model)
+        self.acceptance_strategy = acceptance_strategy or StaticThresholdAcceptance(threshold=0.8, opponent_model=opponent_model)
         self.opponent_model = opponent_model or NoOpponentModel()
 
     def __call__(self, state: SAOState, *args: Any, **kwargs: Any) -> SAOResponse:

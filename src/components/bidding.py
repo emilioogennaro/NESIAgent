@@ -6,15 +6,19 @@ from typing import Any, Optional
 from negmas import Outcome
 from negmas.sao import SAOState
 from negmas.preferences import UtilityFunction
+from .opponent_model import OpponentModel
 
 # ---- Base class ----
 
 class BiddingStrategy(ABC):
     """Abstract base class for all bidding strategies."""
     
+    def __init__(self, opponent_model: Optional[OpponentModel] = None):
+        self.opponent_model = opponent_model
+    
     @abstractmethod
     def generate(self, state: SAOState, ufun: UtilityFunction, nmi: Any) -> Optional[Outcome]:
-        """Generate and return an outcome to propose."""
+        """Generate and return an outcome to propose.""" 
         pass
 
     def _find_outcome_for_utility(self, target_utility: float, ufun: UtilityFunction, nmi: Any, samples: int = 200) -> Outcome:
@@ -46,6 +50,9 @@ class BiddingStrategy(ABC):
 class TimeBasedBiddingStrategy(BiddingStrategy, ABC):
     """Base class for strategies that concede utility over time down to the reserved value."""
 
+    def __init__(self, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
+
     @abstractmethod
     def get_concession_factor(self, progress: float) -> float:
         """Map linear progress [0.0, 1.0] to a curved concession factor [0.0, 1.0]."""
@@ -65,9 +72,12 @@ class TimeBasedBiddingStrategy(BiddingStrategy, ABC):
 # ---- Adaptive base classes ----
 
 class AdaptiveBiddingStrategy(BiddingStrategy, ABC):
-    """Base class for strategies that react to the opponent's behavior over time."""
+    """
+    Base class for strategies that react to the opponent's behavior over time.
+    """
     
-    def __init__(self):
+    def __init__(self, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
         self.last_opponent_offer: Optional[Outcome] = None
         self.last_opponent_utility: float = 0.0
         self.current_target_utility: Optional[float] = None
@@ -97,11 +107,8 @@ class HardlinerBidding(BiddingStrategy):
 class RandomAboveThresholdBidding(BiddingStrategy):
     """Generates random offers meeting a specified utility threshold."""
     
-    def __init__(self, threshold: float = 0.9):
-        """
-        Args:
-            threshold: The target minimum utility acceptable for generated bids.
-        """
+    def __init__(self, threshold: float = 0.9, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
         self.threshold = threshold
         
     def generate(self, state: SAOState, ufun: UtilityFunction, nmi: Any) -> Optional[Outcome]:
@@ -122,6 +129,63 @@ class RandomAboveThresholdBidding(BiddingStrategy):
         return ufun.extreme_outcomes()[1]
 
 
+class OpponentAwareBidding(BiddingStrategy):
+    """Bidding strategy that adapts based on opponent modeling information.
+    
+    Adjusts bidding behavior based on opponent type and behavior patterns.
+    Against hardliners: concedes more slowly to pressure them.
+    Against conceders: concedes faster to reach agreement sooner.
+    """
+    
+    def __init__(self, base_threshold: float = 0.9, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
+        self.base_threshold = base_threshold
+    
+    def generate(self, state: SAOState, ufun: UtilityFunction, nmi: Any) -> Optional[Outcome]:
+        # Always propose the absolute best outcome on the first step
+        if state.step == 0:
+            return ufun.extreme_outcomes()[1]
+
+        threshold = self.base_threshold
+        
+        # Adjust threshold based on opponent model
+        if self.opponent_model:
+            # If opponent is a hardliner, start higher to pressure them
+            if hasattr(self.opponent_model, 'get_opponent_type'):
+                opponent_type = self.opponent_model.get_opponent_type()
+                if opponent_type == "hardliner":
+                    threshold += 0.1  # More demanding
+                elif opponent_type == "conceder":
+                    threshold -= 0.1  # More willing to concede
+            
+            # If opponent concedes slowly, be more patient
+            if hasattr(self.opponent_model, 'get_concession_rate'):
+                concession_rate = self.opponent_model.get_concession_rate()
+                if concession_rate < 0.3:  # Hardliner
+                    threshold += 0.05
+            
+            # Consider time pressure based on opponent's predicted behavior
+            if hasattr(self.opponent_model, 'predict_concession_point'):
+                next_concession = self.opponent_model.predict_concession_point(state.relative_time)
+                if next_concession < 0.8:  # Opponent likely to concede soon
+                    threshold -= 0.05  # Be more flexible
+        
+        # Ensure threshold stays within reasonable bounds
+        threshold = max(float(ufun.reserved_value), min(0.98, threshold))
+        
+        # Use the adjusted threshold
+        target_threshold = max(float(ufun.reserved_value), threshold)
+
+        # Attempt to find a random outcome that meets the threshold
+        for _ in range(1000):
+            candidate = nmi.random_outcome()
+            if float(ufun(candidate)) >= target_threshold:
+                return candidate
+                
+        # Fallback to the best outcome if no random outcome meets the criteria after 1000 tries
+        return ufun.extreme_outcomes()[1]
+
+
 # ---- Specific time-based strategies ----
 
 class LinearBidding(TimeBasedBiddingStrategy):
@@ -129,7 +193,8 @@ class LinearBidding(TimeBasedBiddingStrategy):
         return progress
 
 class StaircaseBidding(TimeBasedBiddingStrategy):
-    def __init__(self, steps: int = 5):
+    def __init__(self, steps: int = 5, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
         self.steps = max(1, steps)
 
     def get_concession_factor(self, progress: float) -> float:
@@ -138,14 +203,16 @@ class StaircaseBidding(TimeBasedBiddingStrategy):
         return math.floor(progress / step_width) * step_width
 
 class HardHeadedButScaredBasedBidding(TimeBasedBiddingStrategy):
-    def __init__(self, concession_exponent: float = 2.0):
+    def __init__(self, concession_exponent: float = 2.0, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
         self.concession_exponent = concession_exponent
 
     def get_concession_factor(self, progress: float) -> float:
         return progress ** self.concession_exponent
 
 class LateDropBasedBidding(TimeBasedBiddingStrategy):
-    def __init__(self, time_threshold: float = 0.8, collapse_exponent: float = 5.0):
+    def __init__(self, time_threshold: float = 0.8, collapse_exponent: float = 5.0, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
         self.time_threshold = time_threshold
         self.collapse_exponent = collapse_exponent
 
@@ -155,7 +222,8 @@ class LateDropBasedBidding(TimeBasedBiddingStrategy):
         return norm ** self.collapse_exponent
 
 class NiceButGetsPissedBasedBidding(TimeBasedBiddingStrategy):
-    def __init__(self, concession_exponent: float = 0.5):
+    def __init__(self, concession_exponent: float = 0.5, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
         self.concession_exponent = concession_exponent
 
     def get_concession_factor(self, progress: float) -> float:
@@ -165,8 +233,8 @@ class NiceButGetsPissedBasedBidding(TimeBasedBiddingStrategy):
 # ---- Adaptive strategies ----
 
 class TitForTatBidding(AdaptiveBiddingStrategy):
-    def __init__(self, strictness: float = 1.0):
-        super().__init__()
+    def __init__(self, strictness: float = 1.0, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
         self.strictness = strictness 
 
     def generate(self, state: SAOState, ufun: UtilityFunction, nmi: Any) -> Optional[Outcome]:
