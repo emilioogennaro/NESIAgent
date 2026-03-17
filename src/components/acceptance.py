@@ -111,7 +111,24 @@ class OpponentAwareAcceptance(AcceptanceStrategy):
                 frequency = self.opponent_model.get_offer_frequency(offer)
                 if frequency > 0.3:  # Frequently offered
                     threshold -= 0.05  # More likely to be acceptable
-        
+
+            # Estimate opponent utility for this offer (Bayesian model)
+            if hasattr(self.opponent_model, 'estimate_utility'):
+                est = self.opponent_model.estimate_utility(offer)
+                if est > 0.8:
+                    threshold += 0.05  # Opponent likely values this offer
+                elif est < 0.3:
+                    threshold -= 0.05  # Opponent likely dislikes this offer
+
+            # Predict opponent utility trend (strategy model)
+            if hasattr(self.opponent_model, 'predict_next_utility'):
+                next_time = min(1.0, (state.relative_time or 0.0) + 0.05)
+                predicted = self.opponent_model.predict_next_utility(ufun, next_time)
+                if predicted > 0.8:
+                    threshold += 0.05
+                elif predicted < 0.3:
+                    threshold -= 0.05
+
         # Ensure threshold stays within reasonable bounds
         threshold = max(0.1, min(0.95, threshold))
         

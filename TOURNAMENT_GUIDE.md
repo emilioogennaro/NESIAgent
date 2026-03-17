@@ -17,12 +17,12 @@ The tournament now automatically:
 1. **Discovers all strategies** from your components:
    - Acceptance strategies: `StaticThresholdAcceptance`, `AspirationalAcceptance`, `OpponentAwareAcceptance`, etc.
    - Bidding strategies: `RandomAboveThresholdBidding`, `OpponentAwareBidding`, `LinearBidding`, etc.
-   - Opponent models: `NoOpponentModel`, `OfferHistoryModel`, `FrequencyOpponentModel`, `ConcessionOpponentModel`, `OpponentTypeClassifier`, `PreferenceEstimationModel`
+   - Opponent models: `NoOpponentModel`, `FrequencyAnalysisModel`, `BayesianUtilityModel`, `StrategyModel(linear/gaussian/wavelet)`
 
 2. **Creates strategy combinations** - For example:
-   - OpponentAwareAcceptance + OpponentAwareBidding + FrequencyOpponentModel
-   - OpponentAwareAcceptance + OpponentAwareBidding + ConcessionOpponentModel
-   - AspirationalAcceptance + LinearBidding + OpponentTypeClassifier
+   - OpponentAwareAcceptance + OpponentAwareBidding + FrequencyAnalysisModel
+   - OpponentAwareAcceptance + OpponentAwareBidding + BayesianUtilityModel
+   - OpponentAwareAcceptance + OpponentAwareBidding + StrategyModel(strategy_type="gaussian")
    - And many more...
 
 3. **Runs a full tournament** where all agent configurations play against each other
@@ -60,28 +60,24 @@ The tournament will create a `tournament_out/` directory with:
 
 ## Key Strategy Combinations to Watch
 
-### Against Hardliners
+### Frequency-based opponent modeling
 ```python
-OpponentAwareAcceptance + OpponentAwareBidding + ConcessionOpponentModel
-# More lenient with acceptance, slower to concede
+OpponentAwareAcceptance + OpponentAwareBidding + FrequencyAnalysisModel
+# Uses opponent's most frequent offers to guide bidding and acceptance
 ```
 
-### Against Conceders
+### Utility-based opponent modeling (Bayesian learning)
 ```python
-OpponentAwareAcceptance + OpponentAwareBidding + ConcessionOpponentModel
-# More demanding, willing to concede faster
+OpponentAwareAcceptance + OpponentAwareBidding + BayesianUtilityModel
+# Learns which outcomes the opponent prefers based on offer history
 ```
 
-### Balanced Approach
+### Strategy prediction (linear / gaussian / wavelet)
 ```python
-OpponentAwareAcceptance + OpponentAwareBidding + OpponentTypeClassifier
-# Classifies opponent type dynamically and adapts
-```
-
-### Value-Based Negotiation
-```python
-OpponentAwareAcceptance + OpponentAwareBidding + PreferenceEstimationModel
-# Learns what the opponent values and exploits it
+OpponentAwareAcceptance + OpponentAwareBidding + StrategyModel(strategy_type="linear")
+OpponentAwareAcceptance + OpponentAwareBidding + StrategyModel(strategy_type="gaussian")
+OpponentAwareAcceptance + OpponentAwareBidding + StrategyModel(strategy_type="wavelet")
+# Predicts opponent utility progression over time and adapts accordingly
 ```
 
 ## Customizing the Tournament

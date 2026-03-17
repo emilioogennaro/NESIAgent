@@ -199,7 +199,13 @@ def discover_strategies() -> Tuple[List[StrategySpec], List[StrategySpec], List[
 
     opponent_specs: List[StrategySpec] = []
     for c in opp_classes:
-        opponent_specs.append(StrategySpec("opponent_model", c.__name__, c.__module__, {}))
+        if c.__name__ == "StrategyModel":
+            for st in ("linear", "gaussian", "wavelet"):
+                opponent_specs.append(
+                    StrategySpec("opponent_model", c.__name__, c.__module__, {"strategy_type": st})
+                )
+        else:
+            opponent_specs.append(StrategySpec("opponent_model", c.__name__, c.__module__, {}))
 
     return acceptance_specs, bidding_specs, opponent_specs
 
