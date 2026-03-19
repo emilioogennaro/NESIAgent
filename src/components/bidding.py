@@ -19,9 +19,6 @@ class BiddingStrategy(ABC):
 
     def _find_outcome_for_utility(self, target_utility: float, ufun: UtilityFunction, nmi: Any, samples: int = 200) -> Outcome:
         """Finds an outcome that provides a utility as close to the target as possible.
-        
-        Safely works with categorical data (strings/discrete values) and respects 
-        non-linear utility functions by searching in utility space.
         """
         best_candidate = None
         smallest_diff = float('inf')
@@ -42,6 +39,50 @@ class BiddingStrategy(ABC):
                 break
                 
         return best_candidate if best_candidate is not None else ufun.extreme_outcomes()[1]
+
+
+# ---- Time-based general class ----
+
+class TimeBasedBiddingStrategy(BiddingStrategy, ABC):
+    """Base class for strategies that concede utility over time down to the reserved value."""
+
+    @abstractmethod
+    def get_concession_factor(self, progress: float) -> float:
+        """Map linear progress [0.0, 1.0] to a curved concession factor [0.0, 1.0]."""
+        pass
+
+    def generate(self, state: SAOState, ufun: UtilityFunction, nmi: Any) -> Optional[Outcome]:
+        progress = state.relative_time 
+        factor = self.get_concession_factor(progress)
+        
+        max_utility = float(ufun(ufun.extreme_outcomes()[1]))
+        floor_utility = float(ufun.reserved_value)
+        
+        target_utility = max_utility - factor * (max_utility - floor_utility)
+        return self._find_outcome_for_utility(target_utility, ufun, nmi)
+    
+
+# ---- Adaptive base classes ----
+
+class AdaptiveBiddingStrategy(BiddingStrategy, ABC):
+    """Base class for strategies that react to the opponent's behavior over time."""
+    
+    def __init__(self):
+        self.last_opponent_offer: Optional[Outcome] = None
+        self.last_opponent_utility: float = 0.0
+        self.current_target_utility: Optional[float] = None
+        
+    def _update_opponent_history(self, offer: Optional[Outcome], ufun: UtilityFunction):
+        """Updates the memory of the opponent's previous offer and its utility for us."""
+        if offer is not None:
+            self.last_opponent_offer = offer
+            self.last_opponent_utility = float(ufun(offer))
+
+    def _initialize_target_utility(self, ufun: UtilityFunction) -> float:
+        """Returns the maximum possible utility to initialize the target."""
+        if self.current_target_utility is None:
+            return float(ufun(ufun.extreme_outcomes()[1]))
+        return self.current_target_utility
 
 
 # ---- Simple & Randomized strategies ----
@@ -79,27 +120,6 @@ class RandomAboveThresholdBidding(BiddingStrategy):
                 
         # Fallback to the best outcome if no random outcome meets the criteria after 1000 tries
         return ufun.extreme_outcomes()[1]
-
-
-# ---- Time-based general class ----
-
-class TimeBasedBiddingStrategy(BiddingStrategy, ABC):
-    """Base class for strategies that concede utility over time down to the reserved value."""
-
-    @abstractmethod
-    def get_concession_factor(self, progress: float) -> float:
-        """Map linear progress [0.0, 1.0] to a curved concession factor [0.0, 1.0]."""
-        pass
-
-    def generate(self, state: SAOState, ufun: UtilityFunction, nmi: Any) -> Optional[Outcome]:
-        progress = state.relative_time 
-        factor = self.get_concession_factor(progress)
-        
-        max_utility = float(ufun(ufun.extreme_outcomes()[1]))
-        floor_utility = float(ufun.reserved_value)
-        
-        target_utility = max_utility - factor * (max_utility - floor_utility)
-        return self._find_outcome_for_utility(target_utility, ufun, nmi)
 
 
 # ---- Specific time-based strategies ----
@@ -142,29 +162,6 @@ class NiceButGetsPissedBasedBidding(TimeBasedBiddingStrategy):
         return progress ** self.concession_exponent
 
 
-# ---- Adaptive base classes ----
-
-class AdaptiveBiddingStrategy(BiddingStrategy, ABC):
-    """Base class for strategies that react to the opponent's behavior over time."""
-    
-    def __init__(self):
-        self.last_opponent_offer: Optional[Outcome] = None
-        self.last_opponent_utility: float = 0.0
-        self.current_target_utility: Optional[float] = None
-        
-    def _update_opponent_history(self, offer: Optional[Outcome], ufun: UtilityFunction):
-        """Updates the memory of the opponent's previous offer and its utility for us."""
-        if offer is not None:
-            self.last_opponent_offer = offer
-            self.last_opponent_utility = float(ufun(offer))
-
-    def _initialize_target_utility(self, ufun: UtilityFunction) -> float:
-        """Returns the maximum possible utility to initialize the target."""
-        if self.current_target_utility is None:
-            return float(ufun(ufun.extreme_outcomes()[1]))
-        return self.current_target_utility
-
-
 # ---- Adaptive strategies ----
 
 class TitForTatBidding(AdaptiveBiddingStrategy):
@@ -173,7 +170,6 @@ class TitForTatBidding(AdaptiveBiddingStrategy):
         self.strictness = strictness 
 
     def generate(self, state: SAOState, ufun: UtilityFunction, nmi: Any) -> Optional[Outcome]:
-        # Pylance now knows target is strictly a float
         target: float = self._initialize_target_utility(ufun)
         offer = state.current_offer
 
@@ -186,7 +182,6 @@ class TitForTatBidding(AdaptiveBiddingStrategy):
         if self.last_opponent_offer is not None:
             opponent_concession = current_opponent_util - self.last_opponent_utility
             if opponent_concession > 0:
-                # Math is now done on the local float 'target'
                 target -= (opponent_concession / self.strictness)
 
         self._update_opponent_history(offer, ufun)
@@ -208,7 +203,6 @@ class StallBreakingBidding(AdaptiveBiddingStrategy):
         self.unblock_bump = unblock_bump
 
     def generate(self, state: SAOState, ufun: UtilityFunction, nmi: Any) -> Optional[Outcome]:
-        # Pylance now knows target is strictly a float
         target: float = self._initialize_target_utility(ufun)
         offer = state.current_offer
 
@@ -231,7 +225,6 @@ class StallBreakingBidding(AdaptiveBiddingStrategy):
             floor_utility = float(ufun.reserved_value)
             range_util = max_utility - floor_utility
             
-            # Math is now done on the local float 'target'
             target -= (range_util * self.unblock_bump)
             self.stall_counter = 0
 
