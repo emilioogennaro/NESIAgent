@@ -8,8 +8,6 @@ from negmas.sao import SAOState
 from negmas.preferences import UtilityFunction
 from .opponent_model import OpponentModel
 
-# ---- Base class ----
-
 class BiddingStrategy(ABC):
     """Abstract base class for all bidding strategies."""
     
@@ -45,8 +43,6 @@ class BiddingStrategy(ABC):
         return best_candidate if best_candidate is not None else ufun.extreme_outcomes()[1]
 
 
-# ---- Time-based general class ----
-
 class TimeBasedBiddingStrategy(BiddingStrategy, ABC):
     """Base class for strategies that concede utility over time down to the reserved value."""
 
@@ -68,8 +64,6 @@ class TimeBasedBiddingStrategy(BiddingStrategy, ABC):
         target_utility = max_utility - factor * (max_utility - floor_utility)
         return self._find_outcome_for_utility(target_utility, ufun, nmi)
 
-
-# ---- Adaptive base classes ----
 
 class AdaptiveBiddingStrategy(BiddingStrategy, ABC):
     """
@@ -94,7 +88,6 @@ class AdaptiveBiddingStrategy(BiddingStrategy, ABC):
             return float(ufun(ufun.extreme_outcomes()[1]))
         return self.current_target_utility
 
-# ---- Simple & Randomized strategies ----
 
 class HardlinerBidding(BiddingStrategy):
     """Refuses to concede, always demanding the maximum possible utility."""
@@ -115,7 +108,6 @@ class RandomAboveThresholdBidding(BiddingStrategy):
         if state.step == 0:
             return ufun.extreme_outcomes()[1]
 
-        # Use the maximum of our requested threshold and the absolute minimum reserved value
         target_threshold = max(float(ufun.reserved_value), self.threshold)
 
         # Attempt to find a random outcome that meets the threshold
@@ -124,7 +116,6 @@ class RandomAboveThresholdBidding(BiddingStrategy):
             if float(ufun(candidate)) >= target_threshold:
                 return candidate
                 
-        # Fallback to the best outcome if no random outcome meets the criteria after 1000 tries
         return ufun.extreme_outcomes()[1]
 
 
@@ -149,27 +140,23 @@ class OpponentAwareBidding(BiddingStrategy):
         
         # Adjust threshold based on opponent model
         if self.opponent_model:
-            # If opponent is a hardliner, start higher to pressure them
             if hasattr(self.opponent_model, 'get_opponent_type'):
                 opponent_type = self.opponent_model.get_opponent_type()
                 if opponent_type == "hardliner":
-                    threshold += 0.1  # More demanding
+                    threshold += 0.1
                 elif opponent_type == "conceder":
-                    threshold -= 0.1  # More willing to concede
+                    threshold -= 0.1
 
-            # If opponent concedes slowly, be more patient
             if hasattr(self.opponent_model, 'get_concession_rate'):
                 concession_rate = self.opponent_model.get_concession_rate()
-                if concession_rate < 0.3:  # Hardliner
+                if concession_rate < 0.3:
                     threshold += 0.05
 
-            # Frequency-based modeling (repeated offers)
             if hasattr(self.opponent_model, 'get_offer_frequency') and state.current_offer is not None:
                 frequency = self.opponent_model.get_offer_frequency(state.current_offer)
                 if frequency > 0.4:
                     threshold += 0.05
 
-            # Bayesian utility estimation
             if hasattr(self.opponent_model, 'estimate_utility') and state.current_offer is not None:
                 est = self.opponent_model.estimate_utility(state.current_offer)
                 if est > 0.8:
@@ -177,7 +164,6 @@ class OpponentAwareBidding(BiddingStrategy):
                 elif est < 0.3:
                     threshold -= 0.05
 
-            # Strategy prediction for future utility
             if hasattr(self.opponent_model, 'predict_next_utility'):
                 next_time = min(1.0, (state.relative_time or 0.0) + 0.05)
                 predicted = self.opponent_model.predict_next_utility(ufun, next_time)
@@ -186,16 +172,13 @@ class OpponentAwareBidding(BiddingStrategy):
                 elif predicted < 0.3:
                     threshold -= 0.05
 
-            # Consider time pressure based on opponent's predicted behavior
             if hasattr(self.opponent_model, 'predict_concession_point'):
                 next_concession = self.opponent_model.predict_concession_point(state.relative_time)
-                if next_concession < 0.8:  # Opponent likely to concede soon
-                    threshold -= 0.05  # Be more flexible
+                if next_concession < 0.8:
+                    threshold -= 0.05
         
-        # Ensure threshold stays within reasonable bounds
         threshold = max(float(ufun.reserved_value), min(0.98, threshold))
         
-        # Use the adjusted threshold
         target_threshold = max(float(ufun.reserved_value), threshold)
 
         # Attempt to find a random outcome that meets the threshold
@@ -204,11 +187,8 @@ class OpponentAwareBidding(BiddingStrategy):
             if float(ufun(candidate)) >= target_threshold:
                 return candidate
                 
-        # Fallback to the best outcome if no random outcome meets the criteria after 1000 tries
         return ufun.extreme_outcomes()[1]
 
-
-# ---- Specific time-based strategies ----
 
 class LinearBidding(TimeBasedBiddingStrategy):
     def get_concession_factor(self, progress: float) -> float:
@@ -243,17 +223,6 @@ class LateDropBasedBidding(TimeBasedBiddingStrategy):
         norm = (progress - self.time_threshold) / (1 - self.time_threshold)
         return norm ** self.collapse_exponent
 
-class NiceButGetsPissedBasedBidding(TimeBasedBiddingStrategy):
-    def __init__(self, concession_exponent: float = 0.5, opponent_model: Optional[OpponentModel] = None):
-        super().__init__(opponent_model)
-        self.concession_exponent = concession_exponent
-
-    def get_concession_factor(self, progress: float) -> float:
-        return progress ** self.concession_exponent
-
-
-# ---- Adaptive strategies ----
-
 class TitForTatBidding(AdaptiveBiddingStrategy):
     def __init__(self, strictness: float = 1.0, opponent_model: Optional[OpponentModel] = None):
         super().__init__(opponent_model)
@@ -279,7 +248,6 @@ class TitForTatBidding(AdaptiveBiddingStrategy):
         floor_utility = float(ufun.reserved_value)
         max_utility = float(ufun(ufun.extreme_outcomes()[1]))
         
-        # Clamp the float and save it back to self
         self.current_target_utility = max(floor_utility, min(max_utility, target))
 
         return self._find_outcome_for_utility(self.current_target_utility, ufun, nmi)
@@ -321,7 +289,6 @@ class StallBreakingBidding(AdaptiveBiddingStrategy):
         floor_utility = float(ufun.reserved_value)
         max_utility = float(ufun(ufun.extreme_outcomes()[1]))
         
-        # Clamp the float and save it back to self
         self.current_target_utility = max(floor_utility, min(max_utility, target))
 
         return self._find_outcome_for_utility(self.current_target_utility, ufun, nmi)

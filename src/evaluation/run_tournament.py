@@ -27,7 +27,6 @@ from rich.progress import (
     SpinnerColumn
 )
 
-# Ensure src/ is importable (same idea as your current script)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from negmas.sao import SAOMechanism
@@ -243,7 +242,6 @@ def build_agent(cfg: AgentConfig, name: str):
 
     opp = _instantiate(opp_cls, cfg.opponent_model.params)
     
-    # Pass opponent_model to strategies that support it
     acc_params = cfg.acceptance.params.copy()
     acc_params['opponent_model'] = opp
     
@@ -461,7 +459,6 @@ def main():
         title="Tournament Plan Details", border_style="cyan"
     ))
 
-    # Pre-calculate flat task list so we can distribute or loop it cleanly
     tasks: List[Tuple[AgentConfig, AgentConfig, ScenarioConfig, int, bool]] = []
     for scenario in scenarios:
         for i, (cfg_a, cfg_b) in enumerate(pairs):
@@ -485,7 +482,6 @@ def main():
             return parts[1].replace("B:", "").replace("Bidding", "").strip()
         return name_str
 
-    # Dynamic Renderable Classes (these are polled automatically by Live)
     class LeaderboardView:
         def __rich__(self) -> Panel:
             table = Table(show_lines=False, expand=True, box=None)
@@ -511,7 +507,7 @@ def main():
         def __rich__(self) -> Panel:
             table = Table(show_header=False, box=None, expand=True)
             table.add_column("Match Info")
-            for msg in reversed(feed_messages):
+            for msg in reversed(list(feed_messages)):
                 table.add_row(msg)
             return Panel(table, title="📡 Live Match Feed", border_style="blue")
 
@@ -523,7 +519,6 @@ def main():
     layout.split_column(Layout(name="header", size=5), Layout(name="main", ratio=1))
     layout["main"].split_row(Layout(name="leaderboard", ratio=6), Layout(name="feed", ratio=4))
     
-    # Assign dynamic views
     layout["header"].update(HeaderView())
     layout["leaderboard"].update(LeaderboardView())
     layout["feed"].update(FeedView())

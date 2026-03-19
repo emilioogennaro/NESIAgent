@@ -54,11 +54,8 @@ class AspirationalAcceptance(AcceptanceStrategy):
         if offer is None:
             return False
         
-        # Get relative time (0 = start, 1 = end of negotiation)
         time_progress = state.relative_time if state.relative_time is not None else 0
         
-        # Compute Boulware curve aspiration level
-        # Formula: reservation + (ideal - reservation) * (1 - time_progress)^e_parameter
         aspiration = (self.reservation_utility + 
                      (self.ideal_utility - self.reservation_utility) * 
                      ((1 - time_progress) ** self.gamma))
@@ -85,35 +82,31 @@ class OpponentAwareAcceptance(AcceptanceStrategy):
         
         # Adjust threshold based on opponent model
         if self.opponent_model:
-            # If opponent is a hardliner, be more willing to accept reasonable offers
             if hasattr(self.opponent_model, 'get_opponent_type'):
                 opponent_type = self.opponent_model.get_opponent_type()
                 if opponent_type == "hardliner":
-                    threshold -= 0.1  # More lenient
+                    threshold -= 0.1
                 elif opponent_type == "conceder":
-                    threshold += 0.05  # More demanding
+                    threshold += 0.05
             
-            # If opponent concedes slowly, we might need to be more patient
             if hasattr(self.opponent_model, 'get_concession_rate'):
                 concession_rate = self.opponent_model.get_concession_rate()
-                if concession_rate < 0.3:  # Hardliner
+                if concession_rate < 0.3:
                     threshold -= 0.05
             
-            # If opponent frequently offers this outcome, it might be their target
             if hasattr(self.opponent_model, 'get_offer_frequency'):
                 frequency = self.opponent_model.get_offer_frequency(offer)
-                if frequency > 0.3:  # Frequently offered
-                    threshold -= 0.05  # More likely to be acceptable
+                if frequency > 0.3:
+                    threshold -= 0.05
 
-            # Estimate opponent utility for this offer (Bayesian model)
             if hasattr(self.opponent_model, 'estimate_utility'):
                 est = self.opponent_model.estimate_utility(offer)
                 if est > 0.8:
-                    threshold += 0.05  # Opponent likely values this offer
+                    threshold += 0.05
                 elif est < 0.3:
-                    threshold -= 0.05  # Opponent likely dislikes this offer
+                    threshold -= 0.05
 
-            # Predict opponent utility trend (strategy model)
+            # Predict opponent utility
             if hasattr(self.opponent_model, 'predict_next_utility'):
                 next_time = min(1.0, (state.relative_time or 0.0) + 0.05)
                 predicted = self.opponent_model.predict_next_utility(ufun, next_time)
@@ -122,7 +115,6 @@ class OpponentAwareAcceptance(AcceptanceStrategy):
                 elif predicted < 0.3:
                     threshold -= 0.05
 
-        # Ensure threshold stays within reasonable bounds
         threshold = max(0.1, min(0.95, threshold))
         
         return ufun(offer) >= threshold
@@ -141,7 +133,6 @@ class AspirationalAcceptance_Weighted(AcceptanceStrategy):
         if offer is None or next_offer is None:
             return False
 
-        # Accept if the weighted utility of the received offer (alpha * utility + beta) is at least as good as the utility of the next planned offer.
         return self.alpha * ufun(offer) + self.beta >= ufun(next_offer)
 
 
@@ -199,13 +190,10 @@ class ProgressBasedAcceptance(AcceptanceStrategy):
         offer_utility = ufun(offer)
         
         if offer_utility >= self.min_threshold:
-            # Update best offer if this one is better
             if self.best_offer_utility is None or offer_utility > self.best_offer_utility:
                 self.best_offer_utility = offer_utility
-                # Accept the first reasonably good offer
                 return True
             
-            # For subsequent offers, require progress
             if offer_utility >= self.best_offer_utility * self.progress_ratio:
                 self.best_offer_utility = offer_utility
                 return True
@@ -233,10 +221,8 @@ class TimeBasedConcessionAcceptance(AcceptanceStrategy):
         if offer is None:
             return False
         
-        # Get relative time (0 = start, 1 = end)
         time_progress = state.relative_time if state.relative_time is not None else 0
         
-        # Linearly interpolate between initial and final thresholds
         current_threshold = (self.initial_threshold - 
                             (self.initial_threshold - self.final_threshold) * time_progress)
         
@@ -273,18 +259,15 @@ class AdaptiveAcceptance(AcceptanceStrategy):
         
         offer_utility = ufun(offer)
         
-        # Track opponent's offers
         self.opponent_offer_history.append(offer_utility)
         
         # Adapt threshold based on opponent's average performance
         if len(self.opponent_offer_history) > 1:
             avg_opponent_utility = sum(self.opponent_offer_history) / len(self.opponent_offer_history)
-            # Adapt: if opponent is doing well, be less demanding; if not, lower expectations as time passes
             time_progress = state.relative_time if state.relative_time is not None else 0
             self.adapted_threshold = (self.base_threshold * (1 - self.learning_rate * avg_opponent_utility) - 
                                      0.1 * time_progress)
         
-        # Never gobelow 0.1 utility
         return offer_utility >= max(0.1, self.adapted_threshold)
 
 class HybridAcceptance(AcceptanceStrategy):
@@ -319,22 +302,18 @@ class HybridAcceptance(AcceptanceStrategy):
         offer_utility = ufun(offer)
         time_progress = state.relative_time if state.relative_time is not None else 0
         
-        # Component 1: Aspiration (Boulware curve)
         aspiration_level = 0.3 + 0.7 * ((1 - time_progress) ** 1.5)
         aspiration_score = min(1.0, offer_utility / aspiration_level) if aspiration_level > 0 else 0
         
-        # Component 2: Opponent model (are they giving good offers?)
         self.opponent_utilities.append(offer_utility)
         if len(self.opponent_utilities) > 1:
             avg_opponent_utility = sum(self.opponent_utilities) / len(self.opponent_utilities)
             opponent_score = min(1.0, avg_opponent_utility)
         else:
-            opponent_score = 0.5  # Neutral on first offer
+            opponent_score = 0.5 
         
-        # Component 3: Time pressure (more lenient as time runs out)
         time_score = 0.3 + 0.7 * time_progress
         
-        # Weighted combination
         decision_score = (self.aspiration_weight * aspiration_score + 
                          self.opponent_weight * opponent_score + 
                          self.time_weight * time_score)

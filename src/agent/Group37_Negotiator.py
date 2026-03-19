@@ -17,7 +17,6 @@ class Group37_Negotiator(SAONegotiator):
                  **kwargs):
         super().__init__(*args, **kwargs)
         
-        # Instantiate default components if none are explicitly injected
         self.bidding_strategy = bidding_strategy or RandomAboveThresholdBidding(threshold=0.9, opponent_model=opponent_model)
         self.acceptance_strategy = acceptance_strategy or StaticThresholdAcceptance(threshold=0.8, opponent_model=opponent_model)
         self.opponent_model = opponent_model or NoOpponentModel()
@@ -27,13 +26,10 @@ class Group37_Negotiator(SAONegotiator):
         offer = state.current_offer
 
         if offer is not None:
-            # 1. Update our knowledge of the opponent
             self.opponent_model.update(offer, state)
             
-            # 2. Ask the acceptance component if we should agree
             if self.acceptance_strategy.evaluate(offer, state, self.ufun):
                 return SAOResponse(ResponseType.ACCEPT_OFFER, offer)
 
-        # 3. If no agreement, ask the bidding component for a counter-offer
         my_proposal = self.bidding_strategy.generate(state, self.ufun, self.nmi)
         return SAOResponse(ResponseType.REJECT_OFFER, my_proposal)

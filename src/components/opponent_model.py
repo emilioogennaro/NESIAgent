@@ -21,7 +21,7 @@ class NoOpponentModel(OpponentModel):
     """A dummy model for when we are not actively tracking the opponent."""
 
     def update(self, offer: Any, state: Any):
-        pass  # Do nothing
+        pass
 
 
 class FrequencyAnalysisModel(OpponentModel):
