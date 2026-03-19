@@ -67,7 +67,7 @@ class TimeBasedBiddingStrategy(BiddingStrategy, ABC):
         
         target_utility = max_utility - factor * (max_utility - floor_utility)
         return self._find_outcome_for_utility(target_utility, ufun, nmi)
-    
+
 
 # ---- Adaptive base classes ----
 
@@ -93,7 +93,6 @@ class AdaptiveBiddingStrategy(BiddingStrategy, ABC):
         if self.current_target_utility is None:
             return float(ufun(ufun.extreme_outcomes()[1]))
         return self.current_target_utility
-
 
 # ---- Simple & Randomized strategies ----
 
