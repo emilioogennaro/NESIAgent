@@ -17,10 +17,7 @@ class AcceptanceStrategy(ABC):
 
 
 class StaticThresholdAcceptance(AcceptanceStrategy):
-    """A simple strategy that accepts any offer above a fixed utility threshold.
-    
-    This is a baseline strategy that doesn't adapt to time or context.
-    Useful for comparison but often performs poorly in realistic negotiations.
+    """A simple strategy that accepts any offer above a fixed utility threshold, doesnt take time or context into account.
     """
     
     def __init__(self, threshold: float = 0.8, opponent_model: Optional[OpponentModel] = None):
@@ -37,25 +34,21 @@ class StaticThresholdAcceptance(AcceptanceStrategy):
 class AspirationalAcceptance(AcceptanceStrategy):
     """Acceptance strategy based on an aspiration level that decreases over time.
     
-    The agent starts with high aspirations and gradually lowers them as the
-    negotiation progresses. This models the natural behavior of becoming more
-    willing to accept worse deals as deadlines approach.
-    
-    The aspiration follows a Boulware curve: starts at ideal_utility and 
-    decreases quadratically towards the reservation_utility.
+    The aspiration follows a Boulware curve, starting at ideal_utility and 
+    decreasing quadratically towards the reservation_utility.
     """
     
     def __init__(self, ideal_utility: float = 1.0, reservation_utility: float = 0.3, 
-                 e_parameter: float = 2.0):
+                 gamma: float = 2.0):
         """
         Args:
-            ideal_utility: The utility we aspire to achieve (typically 1.0)
-            reservation_utility: The minimum acceptable utility (walk-away point)
-            e_parameter: Controls concession curve shape (higher = more stubborn initially)
+            ideal_utility: The best possible utility
+            reservation_utility: The minimum acceptable utility
+            gamma: Concession parameter
         """
         self.ideal_utility = ideal_utility
         self.reservation_utility = reservation_utility
-        self.e_parameter = e_parameter
+        self.gamma = gamma
 
     def evaluate(self, offer: Outcome, state: SAOState, ufun: UtilityFunction) -> bool:
         if offer is None:
@@ -68,7 +61,7 @@ class AspirationalAcceptance(AcceptanceStrategy):
         # Formula: reservation + (ideal - reservation) * (1 - time_progress)^e_parameter
         aspiration = (self.reservation_utility + 
                      (self.ideal_utility - self.reservation_utility) * 
-                     ((1 - time_progress) ** self.e_parameter))
+                     ((1 - time_progress) ** self.gamma))
         
         return ufun(offer) >= aspiration
 
@@ -136,7 +129,9 @@ class OpponentAwareAcceptance(AcceptanceStrategy):
 
 
 class AspirationalAcceptance_Weighted(AcceptanceStrategy):
-    """ACnext(α, β) acceptance strategy."""
+    """
+    Weighted combination of utility and aspiration level.
+    """
 
     def __init__(self, alpha: float = 1.0, beta: float = 0.0):
         self.alpha = alpha
@@ -146,6 +141,7 @@ class AspirationalAcceptance_Weighted(AcceptanceStrategy):
         if offer is None or next_offer is None:
             return False
 
+        # Accept if the weighted utility of the received offer (alpha * utility + beta) is at least as good as the utility of the next planned offer.
         return self.alpha * ufun(offer) + self.beta >= ufun(next_offer)
 
 
@@ -190,8 +186,7 @@ class ProgressBasedAcceptance(AcceptanceStrategy):
         """
         Args:
             min_threshold: Minimum utility to accept (hard floor)
-            progress_ratio: Each acceptable offer must be at least this factor better 
-                          than the previous best (e.g., 1.02 = 2% improvement required)
+            progress_ratio: Each acceptable offer must be at least this factor   better than the previous best (e.g., 1.02 = 2% improvement required)
         """
         self.min_threshold = min_threshold
         self.progress_ratio = progress_ratio
@@ -203,7 +198,6 @@ class ProgressBasedAcceptance(AcceptanceStrategy):
         
         offer_utility = ufun(offer)
         
-        # Accept if above minimum threshold
         if offer_utility >= self.min_threshold:
             # Update best offer if this one is better
             if self.best_offer_utility is None or offer_utility > self.best_offer_utility:
@@ -220,12 +214,10 @@ class ProgressBasedAcceptance(AcceptanceStrategy):
 
 
 class TimeBasedConcessionAcceptance(AcceptanceStrategy):
-    """Acceptance strategy that becomes more lenient as time runs out.
+    """
+    Acceptance strategy that becomes more lenient as time runs out.
     
-    The strategy uses a linear concession function: as time progresses from
-    start to finish, the acceptance threshold decreases from an initial value
-    to a reservation value. This models realistic negotiation behavior where
-    agents become increasingly desperate as deadlines approach.
+    The strategy uses a linear concession function.
     """
     
     def __init__(self, initial_threshold: float = 0.9, final_threshold: float = 0.4):
@@ -256,8 +248,8 @@ class AdaptiveAcceptance(AcceptanceStrategy):
     
     This strategy tracks the offers received from the opponent and adjusts
     the acceptance threshold based on:
-    1. The average quality of opponent's offers (are they improving?)
-    2. The variance in offers (are they being consistent?)
+    1. The average quality of opponent's offers (based on improvement)
+    2. The variance in offers (based on consistency)
     3. Overall negotiation time progress
     
     If the opponent is consistently offering good deals, accept them sooner.
@@ -292,8 +284,8 @@ class AdaptiveAcceptance(AcceptanceStrategy):
             self.adapted_threshold = (self.base_threshold * (1 - self.learning_rate * avg_opponent_utility) - 
                                      0.1 * time_progress)
         
-        return offer_utility >= max(0.1, self.adapted_threshold)  # Never go below 0.1 utility
-
+        # Never gobelow 0.1 utility
+        return offer_utility >= max(0.1, self.adapted_threshold)
 
 class HybridAcceptance(AcceptanceStrategy):
     """Hybrid acceptance strategy combining multiple factors.
