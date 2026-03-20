@@ -2,11 +2,13 @@ import os
 # type: ignore
 import sys
 import json
+import hashlib
 import time
 import math
 import random
 import inspect
 import itertools
+import statistics
 import concurrent.futures
 from collections import deque
 from dataclasses import dataclass, asdict
@@ -24,7 +26,8 @@ from rich.progress import (
     TextColumn, 
     TimeElapsedColumn, 
     TimeRemainingColumn, 
-    SpinnerColumn
+    SpinnerColumn,
+    TaskID,
 )
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -104,6 +107,12 @@ def _bar(x: float, width: int = 18) -> str:
     x = max(0.0, min(1.0, x))
     full = int(round(x * width))
     return "█" * full + "░" * (width - full)
+
+def _stable_hash_mod(text: str, mod: int) -> int:
+    if mod <= 0:
+        raise ValueError("mod must be > 0")
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % mod
 
 def _filter_kwargs_for_callable(callable_obj: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
     try:
@@ -302,6 +311,25 @@ def run_one_session(
 
 
 # -----------------------------
+# Bandit Statistics
+# -----------------------------
+
+def get_ucb_lcb(utilities: List[float], c_value: float) -> Tuple[float, float, float, int]:
+    n = len(utilities)
+    if n == 0:
+        return 1.0, 0.0, 0.5, 0  # UCB, LCB, Mean, Count
+    
+    mu = sum(utilities) / n
+    if n < 2:
+        sigma = 0.5  # High variance default for single point
+    else:
+        sigma = statistics.stdev(utilities)
+        
+    margin = c_value * (sigma / math.sqrt(n))
+    return mu + margin, mu - margin, mu, n
+
+
+# -----------------------------
 # Reporting
 # -----------------------------
 
@@ -412,8 +440,18 @@ def main():
     parser.add_argument("--self-play", action="store_true", help="Include cfg vs itself")
     parser.add_argument("--max-pairs", type=int, default=None, help="Optional cap on number of pairs")
     parser.add_argument("--seed", type=int, default=2026, help="Base RNG seed")
-    parser.add_argument("--speed", type=float, default=1.0, help="UI Simulation speed. 0.05=Slow, 1.0=Normal, >2.0=Hyperfast Multiprocessing")
+    parser.add_argument("--speed", type=float, default=1.0, help="UI Simulation speed. 0.05=Slow, >2.0=Multiprocessing")
+    
+    # Dynamic Tournament Arguments
+    parser.add_argument("--dynamic", action="store_true", help="Use Swiss-Bandit dynamic tournament scheduling")
+    parser.add_argument("--grace-matches", type=int, default=5, help="Grace matches per agent before pruning (Dynamic only)")
+    parser.add_argument("--swiss-rounds", type=int, default=5, help="Number of adaptive Swiss rounds per scenario (Dynamic only)")
+    parser.add_argument("--dynamic-reps", type=int, default=1, help="Repetitions per dynamic pairing (Dynamic only)")
+    parser.add_argument("--c-value", type=float, default=1.96, help="Confidence interval multiplier for pruning (Dynamic only)")
+    parser.add_argument("--scene-pause", type=float, default=0.8, help="Pause in seconds between UI scene transitions")
+    
     args = parser.parse_args()
+    dynamic_reps = max(1, args.dynamic_reps)
 
     tcfg = TournamentConfig(
         out_dir=args.out,
@@ -432,15 +470,13 @@ def main():
     scenarios = build_default_scenarios()
     acc_specs, bid_specs, opp_specs = discover_strategies()
 
+    opp_spec_lines = "\n".join(f"• {spec.label}" for spec in opp_specs)
+    console.print(Panel.fit(
+        f"Discovered Opponent Model Specs ({len(opp_specs)}):\n{opp_spec_lines}",
+        title="Opponent-Model Coverage", border_style="magenta"
+    ))
+
     configs: List[AgentConfig] = [AgentConfig(a, b, o) for a in acc_specs for b in bid_specs for o in opp_specs]
-
-    if tcfg.include_self_play:
-        pairs = list(itertools.combinations_with_replacement(configs, 2))
-    else:
-        pairs = list(itertools.combinations(configs, 2))
-
-    if tcfg.max_pairs is not None:
-        pairs = pairs[: max(0, tcfg.max_pairs)]
 
     meta = {
         "tournament_config": asdict(tcfg),
@@ -449,25 +485,41 @@ def main():
         "n_bidding_specs": len(bid_specs),
         "n_opponent_specs": len(opp_specs),
         "n_agent_configs": len(configs),
-        "n_pairs": len(pairs),
+        "dynamic_mode": args.dynamic,
+        "dynamic_reps": dynamic_reps,
     }
     with open(os.path.join(stamp_dir, "tournament_meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    console.print(Panel.fit(
-        f"Configs: {len(configs)}\nPairs: {len(pairs)}\nScenarios: {len(scenarios)}\nReps/pair: {tcfg.reps_per_pair}\nHyperfast Mode: {'Yes' if args.speed > 2.0 else 'No'}",
-        title="Tournament Plan Details", border_style="cyan"
-    ))
+    max_pairs_label = str(tcfg.max_pairs) if tcfg.max_pairs is not None else "None (full)"
+    swaps_per_pair = 2 if tcfg.swap_sides else 1
+    dynamic_mode_label = "Yes" if args.dynamic else "No"
+    plan_details = (
+        f"Configs: {len(configs)}\n"
+        f"  - Acceptance specs: {len(acc_specs)}\n"
+        f"  - Bidding specs: {len(bid_specs)}\n"
+        f"  - Opponent specs: {len(opp_specs)}\n"
+        f"Scenarios: {len(scenarios)} ({', '.join(s.name for s in scenarios)})\n"
+        f"Base Seed: {tcfg.base_seed}\n"
+        f"Dynamic Scheduling: {dynamic_mode_label}\n"
+        f"Self Play: {'Yes' if tcfg.include_self_play else 'No'}\n"
+        f"Swap Sides: {'Yes' if tcfg.swap_sides else 'No'} (x{swaps_per_pair})\n"
+        f"Static Reps/Pair: {tcfg.reps_per_pair}\n"
+        f"Max Pairs: {max_pairs_label}\n"
+        f"Dynamic Grace Matches: {args.grace_matches}\n"
+        f"Dynamic Swiss Rounds: {args.swiss_rounds}\n"
+        f"Dynamic Reps/Pairing: {dynamic_reps}\n"
+        f"Dynamic C-Value: {args.c_value}\n"
+        f"Scene Pause: {args.scene_pause}s\n"
+        f"Hyperfast Mode: {'Yes' if args.speed > 2.0 else 'No'} (speed={args.speed})"
+    )
+    console.print(Panel.fit(plan_details, title="Tournament Plan Details", border_style="cyan"))
 
-    tasks: List[Tuple[AgentConfig, AgentConfig, ScenarioConfig, int, bool]] = []
-    for scenario in scenarios:
-        for i, (cfg_a, cfg_b) in enumerate(pairs):
-            duel_seed = tcfg.base_seed + 1000000 * (hash(scenario.name) % 1000) + i * 37
-            for r in range(tcfg.reps_per_pair):
-                swaps = (False, True) if tcfg.swap_sides else (False,)
-                for swap in swaps:
-                    seed = duel_seed + 1000 * r + (1 if swap else 0)
-                    tasks.append((cfg_a, cfg_b, scenario, seed, swap))
+    def pause_scene_transition() -> None:
+        if args.scene_pause > 0:
+            time.sleep(args.scene_pause)
+
+    pause_scene_transition()
 
     # -----------------------------
     # Live TUI State & Components
@@ -477,9 +529,33 @@ def main():
     feed_messages = deque(maxlen=12) 
     
     def short_name(name_str: str) -> str:
+        def compact_component(component: str) -> str:
+            value = component.strip()
+            for suffix in ("AcceptanceStrategy", "BiddingStrategy", "OpponentModel", "Strategy", "Model"):
+                if value.endswith(suffix):
+                    value = value[: -len(suffix)]
+                    break
+            replacements = {
+                "concession_exponent": "ce",
+                "time_threshold": "tt",
+                "collapse_exponent": "cx",
+                "stall_tolerance": "st",
+                "unblock_bump": "ub",
+                "strategy_type": "type",
+                "strictness": "str",
+                "threshold": "thr",
+                "steps": "s",
+            }
+            for old, new in replacements.items():
+                value = value.replace(old, new)
+            return value
+
         parts = name_str.split("|")
-        if len(parts) >= 2:
-            return parts[1].replace("B:", "").replace("Bidding", "").strip()
+        if len(parts) >= 3:
+            acceptance = compact_component(parts[0].replace("A:", "").strip())
+            bidding = compact_component(parts[1].replace("B:", "").strip())
+            opponent = compact_component(parts[2].replace("O:", "").strip())
+            return f"A:{acceptance} | B:{bidding} | O:{opponent}"
         return name_str
 
     class LeaderboardView:
@@ -500,7 +576,7 @@ def main():
             leaderboard.sort(key=lambda x: x[0], reverse=True)
 
             for i, (mean_u, agree_rate, agent) in enumerate(leaderboard[:10], start=1):
-                table.add_row(str(i), agent, f"{agree_rate:0.2f} {_bar(agree_rate, 8)}", f"{mean_u:0.3f}")
+                table.add_row(str(i), short_name(agent), f"{agree_rate:0.2f} {_bar(agree_rate, 8)}", f"{mean_u:0.3f}")
             return Panel(table, title="🏆 Live Overall Top 10 (Mean Utility)", border_style="gold1")
 
     class FeedView:
@@ -534,11 +610,10 @@ def main():
         TimeRemainingColumn(),
         expand=True
     )
-    task_id = progress.add_task("[bold white]Running Tournament Pairs...", total=len(tasks))
     
     rows: List[Dict[str, Any]] = []
 
-    def update_ui_state(row: Dict[str, Any]):
+    def update_ui_state(row: Dict[str, Any], task_id: TaskID):
         for agent_key, util_key in [("cfg_a", "utility_a"), ("cfg_b", "utility_b")]:
             ag = row[agent_key]
             agent_stats[ag]["matches"] += 1
@@ -558,32 +633,156 @@ def main():
         feed_messages.append(feed_text)
         progress.advance(task_id, 1)
 
+    def run_task_batch(
+        tasks_batch: List[Tuple],
+        executor,
+        task_id: TaskID,
+        scenario_utils: Optional[Dict[str, List[float]]],
+    ):
+        progress.update(task_id, total=(progress.tasks[task_id].total or 0) + len(tasks_batch))
+        if executor:
+            futures = [executor.submit(run_one_session, *t) for t in tasks_batch]
+            for future in futures:
+                try:
+                    row = future.result()
+                    rows.append(row)
+                    if scenario_utils is not None:
+                        scenario_utils[row["cfg_a"]].append(row["utility_a"])
+                        scenario_utils[row["cfg_b"]].append(row["utility_b"])
+                    update_ui_state(row, task_id)
+                except Exception as e:
+                    feed_messages.append(f"⚠️ [red]Match Error: {str(e)}[/red]")
+                    progress.advance(task_id, 1)
+        else:
+            delay = max(0.0, 0.1 / args.speed - 0.05)
+            for t in tasks_batch:
+                row = run_one_session(*t)
+                rows.append(row)
+                if scenario_utils is not None:
+                    scenario_utils[row["cfg_a"]].append(row["utility_a"])
+                    scenario_utils[row["cfg_b"]].append(row["utility_b"])
+                update_ui_state(row, task_id)
+                if delay > 0:
+                    time.sleep(delay)
+
     # -----------------------------
     # Live Execution Loop
     # -----------------------------
     
     with Live(layout, console=console, refresh_per_second=12) as live:
-        if args.speed > 2.0:
-            # HYPERFAST MODE: Multiprocessing
-            with concurrent.futures.ProcessPoolExecutor() as executor:
-                futures = [executor.submit(run_one_session, *t) for t in tasks]
-                for future in concurrent.futures.as_completed(futures):
-                    try:
-                        row = future.result()
-                        rows.append(row)
-                        update_ui_state(row)
-                    except Exception as e:
-                        feed_messages.append(f"⚠️ [red]Match Error: {str(e)}[/red]")
-                        progress.advance(task_id, 1)
+        executor = concurrent.futures.ProcessPoolExecutor() if args.speed > 2.0 else None
+        
+        if not args.dynamic:
+            # ORIGINAL EXHAUSTIVE ROUND-ROBIN
+            if tcfg.include_self_play:
+                pairs = list(itertools.combinations_with_replacement(configs, 2))
+            else:
+                pairs = list(itertools.combinations(configs, 2))
+
+            if tcfg.max_pairs is not None:
+                pairs = pairs[: max(0, tcfg.max_pairs)]
+
+            task_id = progress.add_task("[bold white]Running Static Tournament...", total=0)
+            for scenario in scenarios:
+                feed_messages.append(f"📍 [bold cyan]Static Scenario: {scenario.name}[/]")
+                pause_scene_transition()
+                tasks = []
+                for i, (cfg_a, cfg_b) in enumerate(pairs):
+                    duel_seed = tcfg.base_seed + 1000000 * _stable_hash_mod(scenario.name, 1000) + i * 37
+                    for r in range(tcfg.reps_per_pair):
+                        swaps = (False, True) if tcfg.swap_sides else (False,)
+                        for swap in swaps:
+                            seed = duel_seed + 1000 * r + (1 if swap else 0)
+                            tasks.append((cfg_a, cfg_b, scenario, seed, swap))
+                run_task_batch(tasks, executor, task_id, None)
+                pause_scene_transition()
+            
         else:
-            # SEQUENTIAL MODE: Artificial Delay
-            delay = max(0.0, 0.1 / args.speed - 0.05)
-            for t in tasks:
-                row = run_one_session(*t)
-                rows.append(row)
-                update_ui_state(row)
-                if delay > 0:
-                    time.sleep(delay)
+            # DYNAMIC SWISS-BANDIT SYSTEM
+            rng = random.Random(tcfg.base_seed)
+            active_configs = configs[:]
+            task_id = progress.add_task("[bold white]Dynamic Phase Running...", total=0)
+            
+            for scenario in scenarios:
+                if len(active_configs) < 2:
+                    break
+                
+                feed_messages.append(f"🏁 [bold magenta]Escalating to Scenario: {scenario.name}[/]")
+                pause_scene_transition()
+                scenario_utils = {c.name: [] for c in active_configs}
+                
+                # Phase 1: Grace Period
+                feed_messages.append(f"⚖️ [blue]Grace Period ({args.grace_matches} matches each)[/]")
+                pause_scene_transition()
+                grace_tasks = []
+                for _ in range(args.grace_matches):
+                    shuffled = active_configs[:]
+                    rng.shuffle(shuffled)
+                    
+                    for i in range(0, len(shuffled)-1, 2):
+                        c1, c2 = shuffled[i], shuffled[i+1]
+                        swaps = (False, True) if tcfg.swap_sides else (False,)
+                        for _rep in range(dynamic_reps):
+                            for swap in swaps:
+                                grace_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap))
+                            
+                    if len(shuffled) % 2 != 0:
+                        c1, c2 = shuffled[-1], rng.choice(shuffled[:-1])
+                        swaps = (False, True) if tcfg.swap_sides else (False,)
+                        for _rep in range(dynamic_reps):
+                            for swap in swaps:
+                                grace_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap))
+
+                run_task_batch(grace_tasks, executor, task_id, scenario_utils)
+                pause_scene_transition()
+
+                # Phase 2: Adaptive Swiss Rounds & Pruning
+                for round_idx in range(args.swiss_rounds):
+                    if len(active_configs) < 2:
+                        break
+                        
+                    # PRUNING LOGIC (UCB / LCB)
+                    stats = {c.name: get_ucb_lcb(scenario_utils[c.name], args.c_value) for c in active_configs}
+                    max_lcb = max(s[1] for s in stats.values())
+                    
+                    survivors = []
+                    for c in active_configs:
+                        ucb, lcb, mu, n = stats[c.name]
+                        if ucb >= max_lcb or (len(survivors) < 2 and len(active_configs) <= 2):
+                            survivors.append(c)
+                        else:
+                            feed_messages.append(f"✂️ [red]Pruned[/] {short_name(c.name)} (UCB:{ucb:.2f} < {max_lcb:.2f})")
+                            
+                    active_configs = survivors
+                    if len(active_configs) < 2:
+                        break
+                        
+                    feed_messages.append(f"⚔️ [bold blue]Swiss Round {round_idx+1}[/] ({len(active_configs)} survivors)")
+                    pause_scene_transition()
+                    
+                    # ADAPTIVE SWISS PAIRING (Pair similar utilities)
+                    active_configs.sort(key=lambda c: stats[c.name][2], reverse=True)
+                    swiss_tasks = []
+                    
+                    for i in range(0, len(active_configs)-1, 2):
+                        c1, c2 = active_configs[i], active_configs[i+1]
+                        swaps = (False, True) if tcfg.swap_sides else (False,)
+                        for _rep in range(dynamic_reps):
+                            for swap in swaps:
+                                swiss_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap))
+                            
+                    if len(active_configs) % 2 != 0:
+                        c1, c2 = active_configs[-1], rng.choice(active_configs[:-1])
+                        swaps = (False, True) if tcfg.swap_sides else (False,)
+                        for _rep in range(dynamic_reps):
+                            for swap in swaps:
+                                swiss_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap))
+                            
+                    run_task_batch(swiss_tasks, executor, task_id, scenario_utils)
+                    pause_scene_transition()
+
+        if executor:
+            executor.shutdown()
 
     # -----------------------------
     # Post-Tournament Execution
