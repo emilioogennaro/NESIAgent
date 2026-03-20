@@ -8,6 +8,7 @@ import random
 import inspect
 import itertools
 import concurrent.futures
+import threading
 from collections import deque
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple, cast
@@ -475,6 +476,7 @@ def main():
     
     agent_stats = {cfg.name: {"matches": 0, "utility_sum": 0.0, "agreements": 0} for cfg in configs}
     feed_messages = deque(maxlen=12) 
+    feed_lock = threading.Lock()
     
     def short_name(name_str: str) -> str:
         parts = name_str.split("|")
@@ -504,10 +506,16 @@ def main():
             return Panel(table, title="🏆 Live Overall Top 10 (Mean Utility)", border_style="gold1")
 
     class FeedView:
-        def __rich__(self) -> Panel:
+       def __rich__(self) -> Panel:
             table = Table(show_header=False, box=None, expand=True)
             table.add_column("Match Info")
-            for msg in reversed(list(feed_messages)):
+            
+            # Safely copy the deque inside the lock
+            with feed_lock:
+                msgs = list(feed_messages)
+                
+            # Iterate over the safe copy
+            for msg in reversed(msgs):
                 table.add_row(msg)
             return Panel(table, title="📡 Live Match Feed", border_style="blue")
 
@@ -555,7 +563,10 @@ def main():
             status = "❌ [red]Timeout / Walkaway[/]"
         
         feed_text = f"[dim][{row['scenario']}][/]\n{status}\n{short_name(row['cfg_a'])} vs {short_name(row['cfg_b'])}\n"
-        feed_messages.append(feed_text)
+        
+        with feed_lock:
+            feed_messages.append(feed_text)
+            
         progress.advance(task_id, 1)
 
     # -----------------------------
@@ -573,7 +584,8 @@ def main():
                         rows.append(row)
                         update_ui_state(row)
                     except Exception as e:
-                        feed_messages.append(f"⚠️ [red]Match Error: {str(e)}[/red]")
+                        with feed_lock:
+                            feed_messages.append(f"⚠️ [red]Match Error: {str(e)}[/red]")
                         progress.advance(task_id, 1)
         else:
             # SEQUENTIAL MODE: Artificial Delay
