@@ -522,6 +522,13 @@ def main():
 
     pause_scene_transition()
 
+    n_configs = len(configs)
+    full_pairings_per_scenario = (
+        (n_configs * (n_configs + 1)) // 2 if tcfg.include_self_play else (n_configs * (n_configs - 1)) // 2
+    )
+    full_pairings_total = full_pairings_per_scenario * len(scenarios)
+    pairing_task_multiplier = swaps_per_pair * (dynamic_reps if args.dynamic else tcfg.reps_per_pair)
+
     # -----------------------------
     # Live TUI State & Components
     # -----------------------------
@@ -529,6 +536,29 @@ def main():
     agent_stats = {cfg.name: {"matches": 0, "utility_sum": 0.0, "agreements": 0} for cfg in configs}
     feed_messages = deque(maxlen=12) 
     feed_lock = threading.Lock()
+    runtime_state = {
+        "mode": "Dynamic" if args.dynamic else "Static",
+        "scenario": "-",
+        "phase": "Initializing",
+        "alive_agents": len(configs),
+        "total_agents": len(configs),
+        "start_ts": time.time(),
+        "batches_run": 0,
+        "tasks_submitted": 0,
+        "completed_matches": 0,
+        "completed_agreements": 0,
+        "completed_failures": 0,
+        "hardball_deals": 0,
+        "sum_welfare": 0.0,
+        "sum_fairness": 0.0,
+        "sum_nash": 0.0,
+        "sum_steps": 0.0,
+        "last_result": "-",
+        "last_matchup": "-",
+        "pruned_total": 0,
+        "last_pruned": 0,
+        "current_round": "-",
+    }
     
     def short_name(name_str: str) -> str:
         def compact_component(component: str) -> str:
@@ -579,7 +609,98 @@ def main():
 
             for i, (mean_u, agree_rate, agent) in enumerate(leaderboard[:10], start=1):
                 table.add_row(str(i), short_name(agent), f"{agree_rate:0.2f} {_bar(agree_rate, 8)}", f"{mean_u:0.3f}")
+
             return Panel(table, title="🏆 Live Overall Top 10 (Mean Utility)", border_style="gold1")
+
+    class StatsView:
+        def __rich__(self) -> Panel:
+            leaderboard = []
+            for agent, stats in agent_stats.items():
+                if stats["matches"] > 0:
+                    mean_u = stats["utility_sum"] / stats["matches"]
+                    agree_rate = stats["agreements"] / stats["matches"]
+                    leaderboard.append((mean_u, agree_rate, agent))
+
+            leaderboard.sort(key=lambda x: x[0], reverse=True)
+
+            total_agent_entries = sum(int(stats["matches"]) for stats in agent_stats.values())
+            completed_matches = total_agent_entries // 2
+            agreement_entries = sum(int(stats["agreements"]) for stats in agent_stats.values())
+            completed_agreements = agreement_entries // 2
+            global_agree_rate = (completed_agreements / completed_matches) if completed_matches > 0 else 0.0
+            global_mean_u = (
+                sum(float(stats["utility_sum"]) for stats in agent_stats.values()) / total_agent_entries
+                if total_agent_entries > 0
+                else 0.0
+            )
+
+            elapsed = max(1e-9, time.time() - float(runtime_state["start_ts"]))
+            throughput = float(runtime_state["completed_matches"]) / elapsed
+            mean_welfare = (
+                float(runtime_state["sum_welfare"]) / float(runtime_state["completed_matches"])
+                if runtime_state["completed_matches"] > 0
+                else 0.0
+            )
+            mean_fairness = (
+                float(runtime_state["sum_fairness"]) / float(runtime_state["completed_matches"])
+                if runtime_state["completed_matches"] > 0
+                else 0.0
+            )
+            mean_nash = (
+                float(runtime_state["sum_nash"]) / float(runtime_state["completed_matches"])
+                if runtime_state["completed_matches"] > 0
+                else 0.0
+            )
+            mean_steps = (
+                float(runtime_state["sum_steps"]) / float(runtime_state["completed_matches"])
+                if runtime_state["completed_matches"] > 0
+                else 0.0
+            )
+
+            active_task = progress.tasks[-1] if len(progress.tasks) > 0 else None
+            task_done = int(active_task.completed) if active_task is not None else 0
+            task_total = int(active_task.total) if (active_task is not None and active_task.total is not None) else 0
+            task_pct = (task_done / task_total) if task_total > 0 else 0.0
+            best_agent_label = short_name(leaderboard[0][2]) if len(leaderboard) > 0 else "-"
+            best_agent_mu = leaderboard[0][0] if len(leaderboard) > 0 else 0.0
+            pairings_explored = int(runtime_state["tasks_submitted"]) // max(1, pairing_task_multiplier)
+            pairings_coverage = (pairings_explored / full_pairings_total) if full_pairings_total > 0 else 0.0
+
+            stats_table = Table(show_header=False, box=None, expand=True, pad_edge=False)
+            stats_table.add_column("k", style="bold cyan", no_wrap=True)
+            stats_table.add_column("v", overflow="fold")
+            stats_table.add_row("Mode", str(runtime_state["mode"]))
+            stats_table.add_row("Scenario", str(runtime_state["scenario"]))
+            stats_table.add_row("Phase", str(runtime_state["phase"]))
+            stats_table.add_row("Round", str(runtime_state["current_round"]))
+            stats_table.add_row(
+                "Alive Agents",
+                f"{runtime_state['alive_agents']}/{runtime_state['total_agents']}",
+            )
+            stats_table.add_row("Agents Scored", f"{len(leaderboard)}/{len(configs)}")
+            stats_table.add_row("Full Pairings/S", f"{full_pairings_per_scenario}")
+            stats_table.add_row("Full Pairings Tot", f"{full_pairings_total}")
+            stats_table.add_row("Pairings Explored", f"{pairings_explored}")
+            stats_table.add_row("Pairings Coverage", f"{pairings_coverage:0.2%}")
+            stats_table.add_row("Completed Matches", f"{completed_matches}")
+            stats_table.add_row("Global Agree", f"{global_agree_rate:0.2f} {_bar(global_agree_rate, 8)}")
+            stats_table.add_row("Global MeanU", f"{global_mean_u:0.3f}")
+            stats_table.add_row("Failures", f"{runtime_state['completed_failures']}")
+            stats_table.add_row("Hardball Deals", f"{runtime_state['hardball_deals']}")
+            stats_table.add_row("Mean Welfare", f"{mean_welfare:0.3f}")
+            stats_table.add_row("Mean Fairness", f"{mean_fairness:0.3f}")
+            stats_table.add_row("Mean Nash", f"{mean_nash:0.3f}")
+            stats_table.add_row("Mean Steps", f"{mean_steps:0.1f}")
+            stats_table.add_row("Batches Run", f"{runtime_state['batches_run']}")
+            stats_table.add_row("Tasks Submitted", f"{runtime_state['tasks_submitted']}")
+            stats_table.add_row("Task Progress", f"{task_done}/{task_total} ({task_pct:0.1%})")
+            stats_table.add_row("Elapsed", f"{elapsed:0.1f}s")
+            stats_table.add_row("Throughput", f"{throughput:0.2f} matches/s")
+            stats_table.add_row("Pruned Total", f"{runtime_state['pruned_total']}")
+            stats_table.add_row("Best Agent", f"{best_agent_label} ({best_agent_mu:0.3f})")
+            stats_table.add_row("Last Result", str(runtime_state["last_result"]))
+
+            return Panel(stats_table, title="📊 Live Stats", border_style="cyan")
 
     class FeedView:
        def __rich__(self) -> Panel:
@@ -601,10 +722,12 @@ def main():
 
     layout = Layout()
     layout.split_column(Layout(name="header", size=5), Layout(name="main", ratio=1))
-    layout["main"].split_row(Layout(name="leaderboard", ratio=6), Layout(name="feed", ratio=4))
+    layout["main"].split_row(Layout(name="left", ratio=6), Layout(name="feed", ratio=4))
+    layout["left"].split_column(Layout(name="leaderboard", ratio=2), Layout(name="stats", ratio=3))
     
     layout["header"].update(HeaderView())
     layout["leaderboard"].update(LeaderboardView())
+    layout["stats"].update(StatsView())
     layout["feed"].update(FeedView())
 
     progress = Progress(
@@ -622,6 +745,13 @@ def main():
     rows: List[Dict[str, Any]] = []
 
     def update_ui_state(row: Dict[str, Any], task_id: TaskID):
+        runtime_state["completed_matches"] += 1
+        runtime_state["sum_welfare"] += float(row["welfare_sum"])
+        runtime_state["sum_fairness"] += float(row["fairness_absdiff"])
+        runtime_state["sum_nash"] += float(row["nash_product"])
+        runtime_state["sum_steps"] += float(row["steps_taken"])
+        runtime_state["last_matchup"] = f"{short_name(row['cfg_a'])} vs {short_name(row['cfg_b'])}"
+
         for agent_key, util_key in [("cfg_a", "utility_a"), ("cfg_b", "utility_b")]:
             ag = row[agent_key]
             agent_stats[ag]["matches"] += 1
@@ -630,12 +760,17 @@ def main():
                 agent_stats[ag]["agreements"] += 1
         
         if row["agreement"]:
+            runtime_state["completed_agreements"] += 1
             if row["utility_a"] > 0.9 or row["utility_b"] > 0.9:
+                runtime_state["hardball_deals"] += 1
                 status = f"🔥 [bold green]Hardball Deal! ({row['utility_a']:.2f}, {row['utility_b']:.2f})[/]"
             else:
                 status = f"✅ [green]Deal ({row['utility_a']:.2f}, {row['utility_b']:.2f})[/]"
+            runtime_state["last_result"] = f"Deal ({row['utility_a']:.2f}, {row['utility_b']:.2f})"
         else:
+            runtime_state["completed_failures"] += 1
             status = "❌ [red]Timeout / Walkaway[/]"
+            runtime_state["last_result"] = "Timeout / Walkaway"
         
         feed_text = f"[dim][{row['scenario']}][/]\n{status}\n{short_name(row['cfg_a'])} vs {short_name(row['cfg_b'])}\n"
         
@@ -650,6 +785,8 @@ def main():
         task_id: TaskID,
         scenario_utils: Optional[Dict[str, List[float]]],
     ):
+        runtime_state["batches_run"] += 1
+        runtime_state["tasks_submitted"] += len(tasks_batch)
         progress.update(task_id, total=(progress.tasks[task_id].total or 0) + len(tasks_batch))
         if executor:
             futures = [executor.submit(run_one_session, *t) for t in tasks_batch]
@@ -685,6 +822,9 @@ def main():
         
         if not args.dynamic:
             # ORIGINAL EXHAUSTIVE ROUND-ROBIN
+            runtime_state["phase"] = "Static Round Robin"
+            runtime_state["alive_agents"] = len(configs)
+            runtime_state["current_round"] = "-"
             if tcfg.include_self_play:
                 pairs = list(itertools.combinations_with_replacement(configs, 2))
             else:
@@ -695,6 +835,8 @@ def main():
 
             task_id = progress.add_task("[bold white]Running Static Tournament...", total=0)
             for scenario in scenarios:
+                runtime_state["scenario"] = scenario.name
+                runtime_state["phase"] = "Static Scenario"
                 feed_messages.append(f"📍 [bold cyan]Static Scenario: {scenario.name}[/]")
                 pause_scene_transition()
                 tasks = []
@@ -712,17 +854,26 @@ def main():
             # DYNAMIC SWISS-BANDIT SYSTEM
             rng = random.Random(tcfg.base_seed)
             active_configs = configs[:]
+            runtime_state["phase"] = "Dynamic Init"
+            runtime_state["alive_agents"] = len(active_configs)
+            runtime_state["current_round"] = "Init"
             task_id = progress.add_task("[bold white]Dynamic Phase Running...", total=0)
             
             for scenario in scenarios:
                 if len(active_configs) < 2:
                     break
                 
+                runtime_state["scenario"] = scenario.name
+                runtime_state["phase"] = "Scenario Escalation"
+                runtime_state["alive_agents"] = len(active_configs)
+                runtime_state["current_round"] = "Escalation"
                 feed_messages.append(f"🏁 [bold magenta]Escalating to Scenario: {scenario.name}[/]")
                 pause_scene_transition()
                 scenario_utils = {c.name: [] for c in active_configs}
                 
                 # Phase 1: Grace Period
+                runtime_state["phase"] = "Grace Period"
+                runtime_state["current_round"] = "Grace"
                 feed_messages.append(f"⚖️ [blue]Grace Period ({args.grace_matches} matches each)[/]")
                 pause_scene_transition()
                 grace_tasks = []
@@ -757,17 +908,24 @@ def main():
                     max_lcb = max(s[1] for s in stats.values())
                     
                     survivors = []
+                    pruned_this_round = 0
                     for c in active_configs:
                         ucb, lcb, mu, n = stats[c.name]
                         if ucb >= max_lcb or (len(survivors) < 2 and len(active_configs) <= 2):
                             survivors.append(c)
                         else:
+                            pruned_this_round += 1
                             feed_messages.append(f"✂️ [red]Pruned[/] {short_name(c.name)} (UCB:{ucb:.2f} < {max_lcb:.2f})")
                             
                     active_configs = survivors
+                    runtime_state["alive_agents"] = len(active_configs)
+                    runtime_state["last_pruned"] = pruned_this_round
+                    runtime_state["pruned_total"] += pruned_this_round
                     if len(active_configs) < 2:
                         break
                         
+                    runtime_state["phase"] = f"Swiss Round {round_idx + 1}"
+                    runtime_state["current_round"] = str(round_idx + 1)
                     feed_messages.append(f"⚔️ [bold blue]Swiss Round {round_idx+1}[/] ({len(active_configs)} survivors)")
                     pause_scene_transition()
                     
