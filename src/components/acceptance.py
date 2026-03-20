@@ -1,27 +1,27 @@
 # type: ignore
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Optional
 from negmas import Outcome
 from negmas.sao import SAOState
 from negmas.preferences import UtilityFunction
+from .opponent_model import OpponentModel
 
 class AcceptanceStrategy(ABC):
     """Abstract base class for all acceptance strategies."""
     
-    @abstractmethod
+    def __init__(self, opponent_model: Optional[OpponentModel] = None):
+        self.opponent_model = opponent_model
     def evaluate(self, offer: Any, state: Any, ufun: Any) -> bool:
         """Evaluate the offer and return True to accept, False to reject."""
         pass
 
 
 class StaticThresholdAcceptance(AcceptanceStrategy):
-    """A simple strategy that accepts any offer above a fixed utility threshold.
-    
-    This is a baseline strategy that doesn't adapt to time or context.
-    Useful for comparison but often performs poorly in realistic negotiations.
+    """A simple strategy that accepts any offer above a fixed utility threshold, doesnt take time or context into account.
     """
     
-    def __init__(self, threshold: float = 0.8):
+    def __init__(self, threshold: float = 0.8, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
         self.threshold = threshold
 
     def evaluate(self, offer: Outcome, state: SAOState, ufun: UtilityFunction) -> bool:
@@ -34,44 +34,96 @@ class StaticThresholdAcceptance(AcceptanceStrategy):
 class AspirationalAcceptance(AcceptanceStrategy):
     """Acceptance strategy based on an aspiration level that decreases over time.
     
-    The agent starts with high aspirations and gradually lowers them as the
-    negotiation progresses. This models the natural behavior of becoming more
-    willing to accept worse deals as deadlines approach.
-    
-    The aspiration follows a Boulware curve: starts at ideal_utility and 
-    decreases quadratically towards the reservation_utility.
+    The aspiration follows a Boulware curve, starting at ideal_utility and 
+    decreasing quadratically towards the reservation_utility.
     """
     
     def __init__(self, ideal_utility: float = 1.0, reservation_utility: float = 0.3, 
-                 e_parameter: float = 2.0):
+                 gamma: float = 2.0):
         """
         Args:
-            ideal_utility: The utility we aspire to achieve (typically 1.0)
-            reservation_utility: The minimum acceptable utility (walk-away point)
-            e_parameter: Controls concession curve shape (higher = more stubborn initially)
+            ideal_utility: The best possible utility
+            reservation_utility: The minimum acceptable utility
+            gamma: Concession parameter
         """
         self.ideal_utility = ideal_utility
         self.reservation_utility = reservation_utility
-        self.e_parameter = e_parameter
+        self.gamma = gamma
 
     def evaluate(self, offer: Outcome, state: SAOState, ufun: UtilityFunction) -> bool:
         if offer is None:
             return False
         
-        # Get relative time (0 = start, 1 = end of negotiation)
         time_progress = state.relative_time if state.relative_time is not None else 0
         
-        # Compute Boulware curve aspiration level
-        # Formula: reservation + (ideal - reservation) * (1 - time_progress)^e_parameter
         aspiration = (self.reservation_utility + 
                      (self.ideal_utility - self.reservation_utility) * 
-                     ((1 - time_progress) ** self.e_parameter))
+                     ((1 - time_progress) ** self.gamma))
         
         return ufun(offer) >= aspiration
+
+
+class OpponentAwareAcceptance(AcceptanceStrategy):
+    """Acceptance strategy that adapts based on opponent modeling information.
     
+    Uses opponent model to predict opponent behavior and adjust acceptance threshold.
+    Becomes more lenient against hardliners and more demanding against conceders.
+    """
+    
+    def __init__(self, base_threshold: float = 0.8, opponent_model: Optional[OpponentModel] = None):
+        super().__init__(opponent_model)
+        self.base_threshold = base_threshold
+    
+    def evaluate(self, offer: Outcome, state: SAOState, ufun: UtilityFunction) -> bool:
+        if offer is None:
+            return False
+        
+        threshold = self.base_threshold
+        
+        # Adjust threshold based on opponent model
+        if self.opponent_model:
+            if hasattr(self.opponent_model, 'get_opponent_type'):
+                opponent_type = self.opponent_model.get_opponent_type()
+                if opponent_type == "hardliner":
+                    threshold -= 0.1
+                elif opponent_type == "conceder":
+                    threshold += 0.05
+            
+            if hasattr(self.opponent_model, 'get_concession_rate'):
+                concession_rate = self.opponent_model.get_concession_rate()
+                if concession_rate < 0.3:
+                    threshold -= 0.05
+            
+            if hasattr(self.opponent_model, 'get_offer_frequency'):
+                frequency = self.opponent_model.get_offer_frequency(offer)
+                if frequency > 0.3:
+                    threshold -= 0.05
+
+            if hasattr(self.opponent_model, 'estimate_utility'):
+                est = self.opponent_model.estimate_utility(offer)
+                if est > 0.8:
+                    threshold += 0.05
+                elif est < 0.3:
+                    threshold -= 0.05
+
+            # Predict opponent utility
+            if hasattr(self.opponent_model, 'predict_next_utility'):
+                next_time = min(1.0, (state.relative_time or 0.0) + 0.05)
+                predicted = self.opponent_model.predict_next_utility(ufun, next_time)
+                if predicted > 0.8:
+                    threshold += 0.05
+                elif predicted < 0.3:
+                    threshold -= 0.05
+
+        threshold = max(0.1, min(0.95, threshold))
+        
+        return ufun(offer) >= threshold
+
 
 class AspirationalAcceptance_Weighted(AcceptanceStrategy):
-    """ACnext(α, β) acceptance strategy."""
+    """
+    Weighted combination of utility and aspiration level.
+    """
 
     def __init__(self, alpha: float = 1.0, beta: float = 0.0):
         self.alpha = alpha
@@ -125,8 +177,7 @@ class ProgressBasedAcceptance(AcceptanceStrategy):
         """
         Args:
             min_threshold: Minimum utility to accept (hard floor)
-            progress_ratio: Each acceptable offer must be at least this factor better 
-                          than the previous best (e.g., 1.02 = 2% improvement required)
+            progress_ratio: Each acceptable offer must be at least this factor   better than the previous best (e.g., 1.02 = 2% improvement required)
         """
         self.min_threshold = min_threshold
         self.progress_ratio = progress_ratio
@@ -138,15 +189,11 @@ class ProgressBasedAcceptance(AcceptanceStrategy):
         
         offer_utility = ufun(offer)
         
-        # Accept if above minimum threshold
         if offer_utility >= self.min_threshold:
-            # Update best offer if this one is better
             if self.best_offer_utility is None or offer_utility > self.best_offer_utility:
                 self.best_offer_utility = offer_utility
-                # Accept the first reasonably good offer
                 return True
             
-            # For subsequent offers, require progress
             if offer_utility >= self.best_offer_utility * self.progress_ratio:
                 self.best_offer_utility = offer_utility
                 return True
@@ -155,12 +202,10 @@ class ProgressBasedAcceptance(AcceptanceStrategy):
 
 
 class TimeBasedConcessionAcceptance(AcceptanceStrategy):
-    """Acceptance strategy that becomes more lenient as time runs out.
+    """
+    Acceptance strategy that becomes more lenient as time runs out.
     
-    The strategy uses a linear concession function: as time progresses from
-    start to finish, the acceptance threshold decreases from an initial value
-    to a reservation value. This models realistic negotiation behavior where
-    agents become increasingly desperate as deadlines approach.
+    The strategy uses a linear concession function.
     """
     
     def __init__(self, initial_threshold: float = 0.9, final_threshold: float = 0.4):
@@ -176,10 +221,8 @@ class TimeBasedConcessionAcceptance(AcceptanceStrategy):
         if offer is None:
             return False
         
-        # Get relative time (0 = start, 1 = end)
         time_progress = state.relative_time if state.relative_time is not None else 0
         
-        # Linearly interpolate between initial and final thresholds
         current_threshold = (self.initial_threshold - 
                             (self.initial_threshold - self.final_threshold) * time_progress)
         
@@ -191,8 +234,8 @@ class AdaptiveAcceptance(AcceptanceStrategy):
     
     This strategy tracks the offers received from the opponent and adjusts
     the acceptance threshold based on:
-    1. The average quality of opponent's offers (are they improving?)
-    2. The variance in offers (are they being consistent?)
+    1. The average quality of opponent's offers (based on improvement)
+    2. The variance in offers (based on consistency)
     3. Overall negotiation time progress
     
     If the opponent is consistently offering good deals, accept them sooner.
@@ -216,19 +259,16 @@ class AdaptiveAcceptance(AcceptanceStrategy):
         
         offer_utility = ufun(offer)
         
-        # Track opponent's offers
         self.opponent_offer_history.append(offer_utility)
         
         # Adapt threshold based on opponent's average performance
         if len(self.opponent_offer_history) > 1:
             avg_opponent_utility = sum(self.opponent_offer_history) / len(self.opponent_offer_history)
-            # Adapt: if opponent is doing well, be less demanding; if not, lower expectations as time passes
             time_progress = state.relative_time if state.relative_time is not None else 0
             self.adapted_threshold = (self.base_threshold * (1 - self.learning_rate * avg_opponent_utility) - 
                                      0.1 * time_progress)
         
-        return offer_utility >= max(0.1, self.adapted_threshold)  # Never go below 0.1 utility
-
+        return offer_utility >= max(0.1, self.adapted_threshold)
 
 class HybridAcceptance(AcceptanceStrategy):
     """Hybrid acceptance strategy combining multiple factors.
@@ -262,22 +302,18 @@ class HybridAcceptance(AcceptanceStrategy):
         offer_utility = ufun(offer)
         time_progress = state.relative_time if state.relative_time is not None else 0
         
-        # Component 1: Aspiration (Boulware curve)
         aspiration_level = 0.3 + 0.7 * ((1 - time_progress) ** 1.5)
         aspiration_score = min(1.0, offer_utility / aspiration_level) if aspiration_level > 0 else 0
         
-        # Component 2: Opponent model (are they giving good offers?)
         self.opponent_utilities.append(offer_utility)
         if len(self.opponent_utilities) > 1:
             avg_opponent_utility = sum(self.opponent_utilities) / len(self.opponent_utilities)
             opponent_score = min(1.0, avg_opponent_utility)
         else:
-            opponent_score = 0.5  # Neutral on first offer
+            opponent_score = 0.5 
         
-        # Component 3: Time pressure (more lenient as time runs out)
         time_score = 0.3 + 0.7 * time_progress
         
-        # Weighted combination
         decision_score = (self.aspiration_weight * aspiration_score + 
                          self.opponent_weight * opponent_score + 
                          self.time_weight * time_score)

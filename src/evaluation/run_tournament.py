@@ -28,7 +28,6 @@ from rich.progress import (
     SpinnerColumn
 )
 
-# Ensure src/ is importable (same idea as your current script)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from negmas.sao import SAOMechanism
@@ -200,7 +199,13 @@ def discover_strategies() -> Tuple[List[StrategySpec], List[StrategySpec], List[
 
     opponent_specs: List[StrategySpec] = []
     for c in opp_classes:
-        opponent_specs.append(StrategySpec("opponent_model", c.__name__, c.__module__, {}))
+        if c.__name__ == "StrategyModel":
+            for st in ("linear", "gaussian", "wavelet"):
+                opponent_specs.append(
+                    StrategySpec("opponent_model", c.__name__, c.__module__, {"strategy_type": st})
+                )
+        else:
+            opponent_specs.append(StrategySpec("opponent_model", c.__name__, c.__module__, {}))
 
     return acceptance_specs, bidding_specs, opponent_specs
 
@@ -236,9 +241,16 @@ def build_agent(cfg: AgentConfig, name: str):
     bid_cls = getattr(__import__(cfg.bidding.module, fromlist=[cfg.bidding.cls_name]), cfg.bidding.cls_name)
     opp_cls = getattr(__import__(cfg.opponent_model.module, fromlist=[cfg.opponent_model.cls_name]), cfg.opponent_model.cls_name)
 
-    acc = _instantiate(acc_cls, cfg.acceptance.params)
-    bid = _instantiate(bid_cls, cfg.bidding.params)
     opp = _instantiate(opp_cls, cfg.opponent_model.params)
+    
+    acc_params = cfg.acceptance.params.copy()
+    acc_params['opponent_model'] = opp
+    
+    bid_params = cfg.bidding.params.copy()
+    bid_params['opponent_model'] = opp
+    
+    acc = _instantiate(acc_cls, acc_params)
+    bid = _instantiate(bid_cls, bid_params)
 
     return Group37_Negotiator(
         name=name,
@@ -448,7 +460,6 @@ def main():
         title="Tournament Plan Details", border_style="cyan"
     ))
 
-    # Pre-calculate flat task list so we can distribute or loop it cleanly
     tasks: List[Tuple[AgentConfig, AgentConfig, ScenarioConfig, int, bool]] = []
     for scenario in scenarios:
         for i, (cfg_a, cfg_b) in enumerate(pairs):
@@ -473,7 +484,6 @@ def main():
             return parts[1].replace("B:", "").replace("Bidding", "").strip()
         return name_str
 
-    # Dynamic Renderable Classes (these are polled automatically by Live)
     class LeaderboardView:
         def __rich__(self) -> Panel:
             table = Table(show_lines=False, expand=True, box=None)
@@ -517,7 +527,6 @@ def main():
     layout.split_column(Layout(name="header", size=5), Layout(name="main", ratio=1))
     layout["main"].split_row(Layout(name="leaderboard", ratio=6), Layout(name="feed", ratio=4))
     
-    # Assign dynamic views
     layout["header"].update(HeaderView())
     layout["leaderboard"].update(LeaderboardView())
     layout["feed"].update(FeedView())
