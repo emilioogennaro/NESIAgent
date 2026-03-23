@@ -11,12 +11,18 @@ import itertools
 import statistics
 import concurrent.futures
 import threading
+import importlib
+import csv
+import subprocess
 from collections import deque
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple, cast
 
+# Guardrail defaults (tuned for stability; tweak if needed).
+RAM_HARD_LIMIT_GB: Optional[int] = None  # None => no RSS cap unless CLI set
+
 import pandas as pd
-from rich.console import Console
+from rich.console import Console, Group
 from rich.table import Table
 from rich.panel import Panel
 from rich.live import Live
@@ -37,9 +43,6 @@ from negmas.sao import SAOMechanism
 from negmas.outcomes import make_issue
 from negmas.preferences import LinearAdditiveUtilityFunction as LUFun
 
-from negmas.sao import RandomNegotiator, AspirationNegotiator, LinearTBNegotiator
-from agent.group4_negotiator import Group4_Negotiator
-from agent.MyNegotiatorTB_V2 import MyNegotiatorTB_V2
 from agent.Group37_Negotiator import Group37_Negotiator
 from components.acceptance import AcceptanceStrategy
 from components.bidding import BiddingStrategy
@@ -71,9 +74,11 @@ class TournamentConfig:
     base_seed: int = 2026
 
 @dataclass(frozen=True)
-class ExternalAgentConfig:
+class ExternalAgentSpec:
     name: str
-    factory: Any
+    module: str
+    cls_name: str
+    params: Dict[str, Any]
 
 @dataclass(frozen=True)
 class StrategySpec:
@@ -121,6 +126,35 @@ def _stable_hash_mod(text: str, mod: int) -> int:
         raise ValueError("mod must be > 0")
     digest = hashlib.sha256(text.encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "big") % mod
+
+def _get_total_ram_gb() -> Optional[int]:
+    try:
+        if sys.platform == "darwin":
+            result = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            bytes_total = int(result.stdout.strip())
+        else:
+            bytes_total = int(os.sysconf("SC_PAGE_SIZE")) * int(os.sysconf("SC_PHYS_PAGES"))
+        return max(1, int(bytes_total // (1024 ** 3)))
+    except Exception:
+        return None
+
+def _get_process_rss_gb(pid: int) -> Optional[float]:
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(pid)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        rss_kb = int(result.stdout.strip())
+        return rss_kb / 1024 / 1024
+    except Exception:
+        return None
 
 def _filter_kwargs_for_callable(callable_obj: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
     try:
@@ -275,9 +309,28 @@ def build_agent(cfg: AgentConfig, name: str):
         opponent_model=opp,
     )
 
+def build_external_agent(spec: ExternalAgentSpec, name: str):
+    try:
+        module_obj = importlib.import_module(spec.module)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to import external agent module '{spec.module}' for '{spec.name}'"
+        ) from exc
+
+    try:
+        cls = getattr(module_obj, spec.cls_name)
+    except AttributeError as exc:
+        raise RuntimeError(
+            f"External agent class '{spec.cls_name}' not found in '{spec.module}' for '{spec.name}'"
+        ) from exc
+
+    params = dict(spec.params)
+    params["name"] = name
+    return _instantiate(cls, params)
+
 def run_one_session(
-    cfg_a: AgentConfig,
-    cfg_b: AgentConfig,
+    cfg_a: Any,
+    cfg_b: Any,
     scenario: ScenarioConfig,
     seed: int,
     swap_ufuns: bool,
@@ -288,8 +341,8 @@ def run_one_session(
     mech = SAOMechanism(issues=issues, n_steps=scenario.n_steps)
 
     def resolve_agent(cfg, name: str):
-        if isinstance(cfg, ExternalAgentConfig):
-            return cfg.factory(name)
+        if isinstance(cfg, ExternalAgentSpec):
+            return build_external_agent(cfg, name)
         return build_agent(cfg, name=name)
 
 
@@ -437,17 +490,6 @@ def make_tui_report(console: Console, df_raw: pd.DataFrame, out_dir: str) -> Non
 # Main
 # -----------------------------
 
-# Picklable factory functions (top-level for multiprocessing compatibility)
-def _make_group4(n): return Group4_Negotiator(name=n)
-def _make_my_negotiator(n): return MyNegotiatorTB_V2(name=n)
-def _make_random(n): return RandomNegotiator(name=n)
-def _make_linear(n): return LinearTBNegotiator(name=n)
-def _make_boulware(n): return AspirationNegotiator(name=n, aspiration_type="boulware")
-def _make_conceder(n): return AspirationNegotiator(name=n, aspiration_type="conceder")
-def _make_linear_asp(n): return AspirationNegotiator(name=n, aspiration_type="linear")
-def _make_aspiration(n): return AspirationNegotiator(name=n)
-def _make_group37(n): return Group37_Negotiator(name=n)
-
 def build_default_scenarios() -> List[ScenarioConfig]:
     return [
         ScenarioConfig(name="S_small", n_issues=2, n_values=25, n_steps=80, reserved_min=0.0, reserved_max=0.2, domain_seed=1),
@@ -455,22 +497,43 @@ def build_default_scenarios() -> List[ScenarioConfig]:
         ScenarioConfig(name="S_large", n_issues=5, n_values=80, n_steps=160, reserved_min=0.0, reserved_max=0.2, domain_seed=3),
     ]
 
-def build_external_agents():
+def build_external_agents() -> List[ExternalAgentSpec]:
     return [
-        ExternalAgentConfig("Group4", _make_group4),
-        ExternalAgentConfig("MyNegotiatorTB_V2", _make_my_negotiator),
-
-        ExternalAgentConfig("Random", _make_random),
-        ExternalAgentConfig("Linear", _make_linear),
-
-        ExternalAgentConfig("Boulware", _make_boulware),
-        ExternalAgentConfig("Conceder", _make_conceder),
-        ExternalAgentConfig("LinearAsp", _make_linear_asp),
-
-        ExternalAgentConfig("Aspiration", _make_aspiration),
-
-        ExternalAgentConfig("Linear2", _make_linear),
+        ExternalAgentSpec("Group4", "agent.group4_negotiator", "Group4_Negotiator", {}),
+        ExternalAgentSpec("MyNegotiatorTB_V2", "agent.MyNegotiatorTB_V2", "MyNegotiatorTB_V2", {}),
+        ExternalAgentSpec("Random", "negmas.sao", "RandomNegotiator", {}),
+        ExternalAgentSpec("Linear", "negmas.sao", "LinearTBNegotiator", {}),
+        ExternalAgentSpec("Boulware", "negmas.sao", "AspirationNegotiator", {"aspiration_type": "boulware"}),
+        ExternalAgentSpec("Conceder", "negmas.sao", "AspirationNegotiator", {"aspiration_type": "conceder"}),
+        ExternalAgentSpec("LinearAsp", "negmas.sao", "AspirationNegotiator", {"aspiration_type": "linear"}),
+        ExternalAgentSpec("Aspiration", "negmas.sao", "AspirationNegotiator", {}),
+        ExternalAgentSpec("Linear2", "negmas.sao", "LinearTBNegotiator", {}),
     ]
+
+def filter_available_external_agents(
+    external_agents: List[ExternalAgentSpec],
+    console: Optional[Console] = None,
+) -> List[ExternalAgentSpec]:
+    available: List[ExternalAgentSpec] = []
+    skipped: List[Tuple[str, str]] = []
+    for spec in external_agents:
+        try:
+            module_obj = importlib.import_module(spec.module)
+            getattr(module_obj, spec.cls_name)
+        except Exception as exc:
+            skipped.append((spec.name, str(exc)))
+            continue
+        available.append(spec)
+
+    if console is not None and skipped:
+        details = "\n".join(f"- {name}: {reason}" for name, reason in skipped)
+        console.print(Panel.fit(
+            f"Skipping {len(skipped)} external agents (import failed):\n{details}",
+            title="External Agents Unavailable",
+            border_style="yellow",
+        ))
+
+    return available
 
 def main():
     import argparse
@@ -483,6 +546,8 @@ def main():
     parser.add_argument("--max-pairs", type=int, default=None, help="Optional cap on number of pairs")
     parser.add_argument("--seed", type=int, default=2026, help="Base RNG seed")
     parser.add_argument("--speed", type=float, default=1.0, help="UI Simulation speed. 0.05=Slow, >2.0=Multiprocessing")
+    parser.add_argument("--workers", type=int, default=4, help="Max worker processes in multiprocessing mode")
+    parser.add_argument("--rss-limit-gb", type=int, default=None, help="Hard RSS cap for this process (GB)")
     
     # Dynamic Tournament Arguments
     parser.add_argument("--dynamic", action="store_true", help="Use Swiss-Bandit dynamic tournament scheduling")
@@ -507,20 +572,44 @@ def main():
     stamp_dir = os.path.join(tcfg.out_dir, _now_stamp())
     _safe_mkdir(stamp_dir)
 
-    console = Console(record=True)
+    console = Console(record=False)
 
     scenarios = build_default_scenarios()
-    external_agents = build_external_agents()
-    group37 = ExternalAgentConfig(
-        "Group37",
-        _make_group37
-    )
+    acc_specs, bid_specs, opp_specs = discover_strategies()
 
-    configs = [group37, *external_agents]
+    opp_spec_lines = "\n".join(f"• {spec.label}" for spec in opp_specs)
+    console.print(Panel.fit(
+        f"Discovered Opponent Model Specs ({len(opp_specs)}):\n{opp_spec_lines}",
+        title="Opponent-Model Coverage", border_style="magenta"
+    ))
+
+    opponent_aware_acceptance = {"OpponentAwareAcceptance"}
+    opponent_aware_bidding = {"OpponentAwareBidding"}
+
+    no_opponent_model = next((spec for spec in opp_specs if spec.cls_name == "NoOpponentModel"), None)
+    if no_opponent_model is None and opp_specs:
+        no_opponent_model = opp_specs[0]
+
+    configs: List[Any] = []
+    for a in acc_specs:
+        for b in bid_specs:
+            is_opponent_aware = (a.cls_name in opponent_aware_acceptance) or (b.cls_name in opponent_aware_bidding)
+            if is_opponent_aware:
+                for o in opp_specs:
+                    configs.append(AgentConfig(a, b, o))
+            elif no_opponent_model is not None:
+                configs.append(AgentConfig(a, b, no_opponent_model))
+
+    external_agents = filter_available_external_agents(build_external_agents(), console)
+    configs.extend(external_agents)
 
     meta = {
         "tournament_config": asdict(tcfg),
         "scenarios": [asdict(s) for s in scenarios],
+        "n_acceptance_specs": len(acc_specs),
+        "n_bidding_specs": len(bid_specs),
+        "n_opponent_specs": len(opp_specs),
+        "n_external_agents": len(external_agents),
         "n_agent_configs": len(configs),
         "dynamic_mode": args.dynamic,
         "dynamic_reps": dynamic_reps,
@@ -532,6 +621,11 @@ def main():
     swaps_per_pair = 2 if tcfg.swap_sides else 1
     dynamic_mode_label = "Yes" if args.dynamic else "No"
     plan_details = (
+        f"Configs: {len(configs)}\n"
+        f"  - Acceptance specs: {len(acc_specs)}\n"
+        f"  - Bidding specs: {len(bid_specs)}\n"
+        f"  - Opponent specs: {len(opp_specs)}\n"
+        f"  - External agents: {len(external_agents)}\n"
         f"Scenarios: {len(scenarios)} ({', '.join(s.name for s in scenarios)})\n"
         f"Base Seed: {tcfg.base_seed}\n"
         f"Dynamic Scheduling: {dynamic_mode_label}\n"
@@ -591,6 +685,8 @@ def main():
         "last_pruned": 0,
         "current_round": "-",
     }
+    phase_index = 0
+    phase_total = 0
     
     def short_name(name_str: str) -> str:
         def compact_component(component: str) -> str:
@@ -644,7 +740,18 @@ def main():
 
             return Panel(table, title="🏆 Live Overall Top 10 (Mean Utility)", border_style="gold1")
 
-    progress = Progress(
+    overall_progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            TextColumn("•"),
+            TimeRemainingColumn(),
+            expand=True
+        )
+    phase_progress = Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
@@ -701,7 +808,7 @@ def main():
                 else 0.0
             )
 
-            active_task = progress.tasks[-1] if len(progress.tasks) > 0 else None
+            active_task = phase_progress.tasks[-1] if len(phase_progress.tasks) > 0 else None
             task_done = int(active_task.completed) if active_task is not None else 0
             task_total = int(active_task.total) if (active_task is not None and active_task.total is not None) else 0
             task_pct = (task_done / task_total) if task_total > 0 else 0.0
@@ -762,7 +869,11 @@ def main():
 
     class HeaderView:
         def __rich__(self) -> Panel:
-            return Panel(progress, title="Tournament Progress", border_style="green")
+            return Panel(
+                Group(overall_progress, phase_progress),
+                title="Tournament Progress",
+                border_style="green",
+            )
 
     layout = Layout()
     layout.split_column(Layout(name="header", size=5), Layout(name="main", ratio=1))
@@ -773,8 +884,20 @@ def main():
     layout["leaderboard"].update(LeaderboardView())
     layout["stats"].update(StatsView())
     layout["feed"].update(FeedView())
-    
-    rows: List[Dict[str, Any]] = []
+
+    raw_csv_path = os.path.join(stamp_dir, "raw_results.csv")
+    raw_file = open(raw_csv_path, "w", encoding="utf-8", newline="")
+    raw_writer: Dict[str, Any] = {"writer": None}
+
+    def write_row(row: Dict[str, Any]) -> None:
+        writer = raw_writer["writer"]
+        if writer is None:
+            writer = csv.DictWriter(raw_file, fieldnames=list(row.keys()))
+            writer.writeheader()
+            raw_writer["writer"] = writer
+        writer.writerow(row)
+        if runtime_state["completed_matches"] % 100 == 0:
+            raw_file.flush()
 
     def update_ui_state(row: Dict[str, Any], task_id: TaskID):
         runtime_state["completed_matches"] += 1
@@ -809,41 +932,75 @@ def main():
         with feed_lock:
             feed_messages.append(feed_text)
             
-        progress.advance(task_id, 1)
+        if phase_task_id is not None:
+            phase_progress.advance(phase_task_id, 1)
+            completed = float(phase_progress.tasks[phase_task_id].completed or 0)
+            total = float(phase_progress.tasks[phase_task_id].total or 0)
+            overall_completed = float(phase_index) + (completed / total if total > 0 else 0.0)
+            overall_progress.update(task_id, completed=overall_completed)
 
     def run_task_batch(
         tasks_batch: List[Tuple],
         executor,
         task_id: TaskID,
         scenario_utils: Optional[Dict[str, List[float]]],
+        extend_total: bool,
     ):
+        if shutdown_event.is_set():
+            return
         runtime_state["batches_run"] += 1
         runtime_state["tasks_submitted"] += len(tasks_batch)
+        if extend_total:
+            existing_total = overall_progress.tasks[task_id].total
+            overall_progress.update(task_id, total=(existing_total or 0) + len(tasks_batch))
         if executor:
             futures = [executor.submit(run_one_session, *t) for t in tasks_batch]
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    row = future.result(timeout=30)  # ⏱️ prevent infinite hang
-                    rows.append(row)
+            pending = set(futures)
+            while pending and not shutdown_event.is_set():
+                done, pending = concurrent.futures.wait(
+                    pending,
+                    timeout=0.5,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    try:
+                        row = future.result(timeout=0)
+                        write_row(row)
 
-                    if scenario_utils is not None:
-                        scenario_utils[row["cfg_a"]].append(row["utility_a"])
-                        scenario_utils[row["cfg_b"]].append(row["utility_b"])
+                        if scenario_utils is not None:
+                            scenario_utils[row["cfg_a"]].append(row["utility_a"])
+                            scenario_utils[row["cfg_b"]].append(row["utility_b"])
 
-                    update_ui_state(row, task_id)
+                        update_ui_state(row, task_id)
 
-                except concurrent.futures.TimeoutError:
-                    feed_messages.append("⏰ [red]Match Timeout[/red]")
-                    progress.advance(task_id, 1)
+                    except concurrent.futures.TimeoutError:
+                        feed_messages.append("⏰ [red]Match Timeout[/red]")
+                        if phase_task_id is not None:
+                            phase_progress.advance(phase_task_id, 1)
+                            completed = float(phase_progress.tasks[phase_task_id].completed or 0)
+                            total = float(phase_progress.tasks[phase_task_id].total or 0)
+                            overall_completed = float(phase_index) + (completed / total if total > 0 else 0.0)
+                            overall_progress.update(task_id, completed=overall_completed)
 
-                except Exception as e:
-                    feed_messages.append(f"⚠️ [red]Match Error: {str(e)}[/red]")
-                    progress.advance(task_id, 1)
+                    except Exception as e:
+                        feed_messages.append(f"⚠️ [red]Match Error: {str(e)}[/red]")
+                        if phase_task_id is not None:
+                            phase_progress.advance(phase_task_id, 1)
+                            completed = float(phase_progress.tasks[phase_task_id].completed or 0)
+                            total = float(phase_progress.tasks[phase_task_id].total or 0)
+                            overall_completed = float(phase_index) + (completed / total if total > 0 else 0.0)
+                            overall_progress.update(task_id, completed=overall_completed)
+
+            if shutdown_event.is_set() and pending:
+                for future in pending:
+                    future.cancel()
         else:
             delay = max(0.0, 0.1 / args.speed - 0.05)
             for t in tasks_batch:
+                if shutdown_event.is_set():
+                    return
                 row = run_one_session(*t)
-                rows.append(row)
+                write_row(row)
                 if scenario_utils is not None:
                     scenario_utils[row["cfg_a"]].append(row["utility_a"])
                     scenario_utils[row["cfg_b"]].append(row["utility_b"])
@@ -856,7 +1013,30 @@ def main():
     # -----------------------------
     
     with Live(layout, console=console, refresh_per_second=12) as live:
-        executor = concurrent.futures.ProcessPoolExecutor() if args.speed > 2.0 else None
+        shutdown_event = threading.Event()
+        phase_task_id: Optional[TaskID] = None
+        overall_task_id: Optional[TaskID] = None
+        max_workers = max(1, args.workers)
+        rss_limit_gb = args.rss_limit_gb if args.rss_limit_gb is not None else RAM_HARD_LIMIT_GB
+        if rss_limit_gb is not None:
+            def _monitor_rss() -> None:
+                while not shutdown_event.is_set():
+                    rss_gb = _get_process_rss_gb(os.getpid())
+                    if rss_gb is not None and rss_gb >= rss_limit_gb:
+                        shutdown_event.set()
+                        console.print(Panel.fit(
+                            f"RAM limit reached ({rss_gb:0.1f} GB >= {rss_limit_gb} GB). Stopping.",
+                            title="Memory Guard",
+                            border_style="red",
+                        ))
+                        return
+                    time.sleep(1.0)
+            threading.Thread(target=_monitor_rss, daemon=True).start()
+        executor = (
+            concurrent.futures.ProcessPoolExecutor(max_workers=max_workers)
+            if args.speed > 2.0
+            else None
+        )
         
         if not args.dynamic:
             # ORIGINAL EXHAUSTIVE ROUND-ROBIN
@@ -876,8 +1056,11 @@ def main():
                 n_pairs = len(pairs)
                 total_tasks += n_pairs * tcfg.reps_per_pair * swaps_per_pair
 
-            task_id = progress.add_task("[bold white]Running Static Tournament...", total=total_tasks)
+            overall_task_id = overall_progress.add_task("[bold white]Overall Progress", total=len(scenarios))
+            phase_index = 0
             for scenario in scenarios:
+                if shutdown_event.is_set():
+                    break
                 runtime_state["scenario"] = scenario.name
                 runtime_state["phase"] = "Static Scenario"
                 feed_messages.append(f"📍 [bold cyan]Static Scenario: {scenario.name}[/]")
@@ -890,7 +1073,21 @@ def main():
                         for swap in swaps:
                             seed = duel_seed + 1000 * r + (1 if swap else 0)
                             tasks.append((cfg_a, cfg_b, scenario, seed, swap))
-                run_task_batch(tasks, executor, task_id, None)
+                phase_total = len(tasks)
+                if phase_task_id is None:
+                    phase_task_id = phase_progress.add_task(
+                        f"[bold white]Scenario {scenario.name}",
+                        total=phase_total,
+                    )
+                else:
+                    phase_progress.reset(
+                        phase_task_id,
+                        description=f"[bold white]Scenario {scenario.name}",
+                        total=phase_total,
+                    )
+                run_task_batch(tasks, executor, overall_task_id, None, False)
+                phase_index += 1
+                overall_progress.update(overall_task_id, completed=float(phase_index))
                 pause_scene_transition()
             
         else:
@@ -900,9 +1097,13 @@ def main():
             runtime_state["phase"] = "Dynamic Init"
             runtime_state["alive_agents"] = len(active_configs)
             runtime_state["current_round"] = "Init"
-            task_id = progress.add_task("[bold white]Dynamic Phase Running...", total=None)
+            total_phases = len(scenarios) * (1 + args.swiss_rounds)
+            overall_task_id = overall_progress.add_task("[bold white]Overall Progress", total=total_phases)
+            phase_index = 0
             
             for scenario in scenarios:
+                if shutdown_event.is_set():
+                    break
                 if len(active_configs) < 2:
                     break
                 
@@ -913,14 +1114,30 @@ def main():
                 feed_messages.append(f"🏁 [bold magenta]Escalating to Scenario: {scenario.name}[/]")
                 pause_scene_transition()
                 scenario_utils = {c.name: [] for c in active_configs}
+                batch_size = 200
                 
                 # Phase 1: Grace Period
                 runtime_state["phase"] = "Grace Period"
                 runtime_state["current_round"] = "Grace"
                 feed_messages.append(f"⚖️ [blue]Grace Period ({args.grace_matches} matches each)[/]")
                 pause_scene_transition()
-                grace_tasks = []
+                pairings = (len(active_configs) // 2) + (1 if len(active_configs) % 2 != 0 else 0)
+                phase_total = args.grace_matches * pairings * swaps_per_pair * dynamic_reps
+                if phase_task_id is None:
+                    phase_task_id = phase_progress.add_task(
+                        f"[bold white]Grace {scenario.name}",
+                        total=phase_total,
+                    )
+                else:
+                    phase_progress.reset(
+                        phase_task_id,
+                        description=f"[bold white]Grace {scenario.name}",
+                        total=phase_total,
+                    )
+                grace_tasks: List[Tuple] = []
                 for _ in range(args.grace_matches):
+                    if shutdown_event.is_set():
+                        break
                     shuffled = active_configs[:]
                     rng.shuffle(shuffled)
                     
@@ -930,6 +1147,9 @@ def main():
                         for _rep in range(dynamic_reps):
                             for swap in swaps:
                                 grace_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap))
+                                if len(grace_tasks) >= batch_size:
+                                    run_task_batch(grace_tasks, executor, overall_task_id, scenario_utils, False)
+                                    grace_tasks.clear()
                             
                     if len(shuffled) % 2 != 0:
                         c1, c2 = shuffled[-1], rng.choice(shuffled[:-1])
@@ -937,12 +1157,20 @@ def main():
                         for _rep in range(dynamic_reps):
                             for swap in swaps:
                                 grace_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap))
+                                if len(grace_tasks) >= batch_size:
+                                    run_task_batch(grace_tasks, executor, overall_task_id, scenario_utils, False)
+                                    grace_tasks.clear()
 
-                run_task_batch(grace_tasks, executor, task_id, scenario_utils)
+                if grace_tasks:
+                    run_task_batch(grace_tasks, executor, overall_task_id, scenario_utils, False)
+                phase_index += 1
+                overall_progress.update(overall_task_id, completed=float(phase_index))
                 pause_scene_transition()
 
                 # Phase 2: Adaptive Swiss Rounds & Pruning
                 for round_idx in range(args.swiss_rounds):
+                    if shutdown_event.is_set():
+                        break
                     if len(active_configs) < 2:
                         break
                         
@@ -971,10 +1199,23 @@ def main():
                     runtime_state["current_round"] = str(round_idx + 1)
                     feed_messages.append(f"⚔️ [bold blue]Swiss Round {round_idx+1}[/] ({len(active_configs)} survivors)")
                     pause_scene_transition()
+                    pairings = (len(active_configs) // 2) + (1 if len(active_configs) % 2 != 0 else 0)
+                    phase_total = pairings * swaps_per_pair * dynamic_reps
+                    if phase_task_id is None:
+                        phase_task_id = phase_progress.add_task(
+                            f"[bold white]Swiss {scenario.name} R{round_idx + 1}",
+                            total=phase_total,
+                        )
+                    else:
+                        phase_progress.reset(
+                            phase_task_id,
+                            description=f"[bold white]Swiss {scenario.name} R{round_idx + 1}",
+                            total=phase_total,
+                        )
                     
                     # ADAPTIVE SWISS PAIRING (Pair similar utilities)
                     active_configs.sort(key=lambda c: stats[c.name][2], reverse=True)
-                    swiss_tasks = []
+                    swiss_tasks: List[Tuple] = []
                     
                     for i in range(0, len(active_configs)-1, 2):
                         c1, c2 = active_configs[i], active_configs[i+1]
@@ -982,6 +1223,9 @@ def main():
                         for _rep in range(dynamic_reps):
                             for swap in swaps:
                                 swiss_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap))
+                                if len(swiss_tasks) >= batch_size:
+                                    run_task_batch(swiss_tasks, executor, overall_task_id, scenario_utils, False)
+                                    swiss_tasks.clear()
                             
                     if len(active_configs) % 2 != 0:
                         c1, c2 = active_configs[-1], rng.choice(active_configs[:-1])
@@ -989,8 +1233,13 @@ def main():
                         for _rep in range(dynamic_reps):
                             for swap in swaps:
                                 swiss_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap))
-                            
-                    run_task_batch(swiss_tasks, executor, task_id, scenario_utils)
+                                if len(swiss_tasks) >= batch_size:
+                                    run_task_batch(swiss_tasks, executor, overall_task_id, scenario_utils, False)
+                                    swiss_tasks.clear()
+                    if swiss_tasks:
+                        run_task_batch(swiss_tasks, executor, overall_task_id, scenario_utils, False)
+                    phase_index += 1
+                    overall_progress.update(overall_task_id, completed=float(phase_index))
                     pause_scene_transition()
 
         if executor:
@@ -1000,12 +1249,18 @@ def main():
     # Post-Tournament Execution
     # -----------------------------
 
-    df_raw = pd.DataFrame(rows)
-    df_raw.to_csv(os.path.join(stamp_dir, "raw_results.csv"), index=False)
+    raw_file.close()
+
+    if raw_writer["writer"] is None:
+        df_raw = pd.DataFrame()
+    else:
+        df_raw = pd.read_csv(raw_csv_path)
 
     make_tui_report(console, df_raw, stamp_dir)
 
-    console.save_text(os.path.join(stamp_dir, "tournament_report.txt"))
+    report_console = Console(record=True)
+    make_tui_report(report_console, df_raw, stamp_dir)
+    report_console.save_text(os.path.join(stamp_dir, "tournament_report.txt"))
     console.print(Panel.fit(f"Wrote outputs to: {stamp_dir}", title="Done", border_style="bold green"))
 
 
