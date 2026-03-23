@@ -33,6 +33,9 @@ from negmas.sao import SAOMechanism
 from negmas.outcomes import make_issue
 from negmas.preferences import LinearAdditiveUtilityFunction as LUFun
 
+from negmas.sao import RandomNegotiator, AspirationNegotiator, LinearTBNegotiator
+from agent.group4_negotiator import Group4_Negotiator
+from agent.MyNegotiatorTB_V2 import MyNegotiatorTB_V2
 from agent.Group37_Negotiator import Group37_Negotiator
 from components.acceptance import AcceptanceStrategy
 from components.bidding import BiddingStrategy
@@ -63,6 +66,10 @@ class TournamentConfig:
     max_pairs: Optional[int] = None
     base_seed: int = 2026
 
+@dataclass(frozen=True)
+class ExternalAgentConfig:
+    name: str
+    factory: Any
 
 @dataclass(frozen=True)
 class StrategySpec:
@@ -270,8 +277,14 @@ def run_one_session(
 
     mech = SAOMechanism(issues=issues, n_steps=scenario.n_steps)
 
-    agent_a = build_agent(cfg_a, name="AgentA")
-    agent_b = build_agent(cfg_b, name="AgentB")
+    def resolve_agent(cfg, name: str):
+        if isinstance(cfg, ExternalAgentConfig):
+            return cfg.factory(name)
+        return build_agent(cfg, name=name)
+
+
+    agent_a = resolve_agent(cfg_a, "AgentA")
+    agent_b = resolve_agent(cfg_b, "AgentB")
 
     mech.add(agent_a, ufun=ufun_a)
     mech.add(agent_b, ufun=ufun_b)
@@ -395,11 +408,39 @@ def make_tui_report(console: Console, df_raw: pd.DataFrame, out_dir: str) -> Non
 # Main
 # -----------------------------
 
+# Picklable factory functions (top-level for multiprocessing compatibility)
+def _make_group4(n): return Group4_Negotiator(name=n)
+def _make_my_negotiator(n): return MyNegotiatorTB_V2(name=n)
+def _make_random(n): return RandomNegotiator(name=n)
+def _make_linear(n): return LinearTBNegotiator(name=n)
+def _make_boulware(n): return AspirationNegotiator(name=n, aspiration_type="boulware")
+def _make_conceder(n): return AspirationNegotiator(name=n, aspiration_type="conceder")
+def _make_linear_asp(n): return AspirationNegotiator(name=n, aspiration_type="linear")
+def _make_aspiration(n): return AspirationNegotiator(name=n)
+def _make_group37(n): return Group37_Negotiator(name=n)
+
 def build_default_scenarios() -> List[ScenarioConfig]:
     return [
         ScenarioConfig(name="S_small", n_issues=2, n_values=25, n_steps=80, reserved_min=0.0, reserved_max=0.2, domain_seed=1),
         ScenarioConfig(name="S_medium", n_issues=3, n_values=50, n_steps=120, reserved_min=0.0, reserved_max=0.2, domain_seed=2),
         ScenarioConfig(name="S_large", n_issues=5, n_values=80, n_steps=160, reserved_min=0.0, reserved_max=0.2, domain_seed=3),
+    ]
+
+def build_external_agents():
+    return [
+        ExternalAgentConfig("Group4", _make_group4),
+        ExternalAgentConfig("MyNegotiatorTB_V2", _make_my_negotiator),
+
+        ExternalAgentConfig("Random", _make_random),
+        ExternalAgentConfig("Linear", _make_linear),
+
+        ExternalAgentConfig("Boulware", _make_boulware),
+        ExternalAgentConfig("Conceder", _make_conceder),
+        ExternalAgentConfig("LinearAsp", _make_linear_asp),
+
+        ExternalAgentConfig("Aspiration", _make_aspiration),
+
+        ExternalAgentConfig("Linear2", _make_linear),
     ]
 
 def main():
@@ -430,9 +471,13 @@ def main():
     console = Console(record=True)
 
     scenarios = build_default_scenarios()
-    acc_specs, bid_specs, opp_specs = discover_strategies()
+    external_agents = build_external_agents()
+    group37 = ExternalAgentConfig(
+        "Group37",
+        _make_group37
+    )
 
-    configs: List[AgentConfig] = [AgentConfig(a, b, o) for a in acc_specs for b in bid_specs for o in opp_specs]
+    configs = [group37, *external_agents]
 
     if tcfg.include_self_play:
         pairs = list(itertools.combinations_with_replacement(configs, 2))
@@ -445,9 +490,6 @@ def main():
     meta = {
         "tournament_config": asdict(tcfg),
         "scenarios": [asdict(s) for s in scenarios],
-        "n_acceptance_specs": len(acc_specs),
-        "n_bidding_specs": len(bid_specs),
-        "n_opponent_specs": len(opp_specs),
         "n_agent_configs": len(configs),
         "n_pairs": len(pairs),
     }
