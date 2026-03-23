@@ -477,7 +477,22 @@ def main():
         title="Opponent-Model Coverage", border_style="magenta"
     ))
 
-    configs: List[AgentConfig] = [AgentConfig(a, b, o) for a in acc_specs for b in bid_specs for o in opp_specs]
+    opponent_aware_acceptance = {"OpponentAwareAcceptance"}
+    opponent_aware_bidding = {"OpponentAwareBidding"}
+
+    no_opponent_model = next((spec for spec in opp_specs if spec.cls_name == "NoOpponentModel"), None)
+    if no_opponent_model is None and opp_specs:
+        no_opponent_model = opp_specs[0]
+
+    configs: List[AgentConfig] = []
+    for a in acc_specs:
+        for b in bid_specs:
+            is_opponent_aware = (a.cls_name in opponent_aware_acceptance) or (b.cls_name in opponent_aware_bidding)
+            if is_opponent_aware:
+                for o in opp_specs:
+                    configs.append(AgentConfig(a, b, o))
+            elif no_opponent_model is not None:
+                configs.append(AgentConfig(a, b, no_opponent_model))
 
     meta = {
         "tournament_config": asdict(tcfg),
