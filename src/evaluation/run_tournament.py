@@ -644,6 +644,18 @@ def main():
 
             return Panel(table, title="🏆 Live Overall Top 10 (Mean Utility)", border_style="gold1")
 
+    progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            TextColumn("•"),
+            TimeRemainingColumn(),
+            expand=True
+        )
+
     class StatsView:
         def __rich__(self) -> Panel:
             leaderboard = []
@@ -761,18 +773,6 @@ def main():
     layout["leaderboard"].update(LeaderboardView())
     layout["stats"].update(StatsView())
     layout["feed"].update(FeedView())
-
-    progress = Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TextColumn("•"),
-        TimeElapsedColumn(),
-        TextColumn("•"),
-        TimeRemainingColumn(),
-        expand=True
-    )
     
     rows: List[Dict[str, Any]] = []
 
@@ -819,17 +819,23 @@ def main():
     ):
         runtime_state["batches_run"] += 1
         runtime_state["tasks_submitted"] += len(tasks_batch)
-        progress.update(task_id, total=(progress.tasks[task_id].total or 0) + len(tasks_batch))
         if executor:
             futures = [executor.submit(run_one_session, *t) for t in tasks_batch]
-            for future in futures:
+            for future in concurrent.futures.as_completed(futures):
                 try:
-                    row = future.result()
+                    row = future.result(timeout=30)  # ⏱️ prevent infinite hang
                     rows.append(row)
+
                     if scenario_utils is not None:
                         scenario_utils[row["cfg_a"]].append(row["utility_a"])
                         scenario_utils[row["cfg_b"]].append(row["utility_b"])
+
                     update_ui_state(row, task_id)
+
+                except concurrent.futures.TimeoutError:
+                    feed_messages.append("⏰ [red]Match Timeout[/red]")
+                    progress.advance(task_id, 1)
+
                 except Exception as e:
                     feed_messages.append(f"⚠️ [red]Match Error: {str(e)}[/red]")
                     progress.advance(task_id, 1)
@@ -865,7 +871,12 @@ def main():
             if tcfg.max_pairs is not None:
                 pairs = pairs[: max(0, tcfg.max_pairs)]
 
-            task_id = progress.add_task("[bold white]Running Static Tournament...", total=0)
+            total_tasks = 0
+            for scenario in scenarios:
+                n_pairs = len(pairs)
+                total_tasks += n_pairs * tcfg.reps_per_pair * swaps_per_pair
+
+            task_id = progress.add_task("[bold white]Running Static Tournament...", total=total_tasks)
             for scenario in scenarios:
                 runtime_state["scenario"] = scenario.name
                 runtime_state["phase"] = "Static Scenario"
@@ -889,7 +900,7 @@ def main():
             runtime_state["phase"] = "Dynamic Init"
             runtime_state["alive_agents"] = len(active_configs)
             runtime_state["current_round"] = "Init"
-            task_id = progress.add_task("[bold white]Dynamic Phase Running...", total=0)
+            task_id = progress.add_task("[bold white]Dynamic Phase Running...", total=None)
             
             for scenario in scenarios:
                 if len(active_configs) < 2:
