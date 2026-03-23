@@ -16,3 +16,6 @@ dist/
 
 # Tournamet results and statistics
 tournament_out/
+
+# System files
+.DS_Store
