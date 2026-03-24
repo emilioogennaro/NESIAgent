@@ -6,8 +6,11 @@
 # Activate your virtual environment
 ./venv/Scripts/Activate.ps1
 
-# Run the tournament
+# Run the cross-validation tournament
 python src/evaluation/run_tournament.py
+
+# Run the evaluation tournament
+python src/evaluation/run_tournament_evaluation.py
 ```
 
 ## What Happens
