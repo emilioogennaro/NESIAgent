@@ -493,11 +493,11 @@ def build_default_scenarios() -> List[ScenarioConfig]:
     return [
         ScenarioConfig(name="S_small", n_issues=2, n_values=25, n_steps=80, reserved_min=0.0, reserved_max=0.2, domain_seed=1),
         ScenarioConfig(name="S_medium", n_issues=3, n_values=50, n_steps=120, reserved_min=0.0, reserved_max=0.2, domain_seed=2),
-        ScenarioConfig(name="S_large", n_issues=5, n_values=80, n_steps=160, reserved_min=0.0, reserved_max=0.2, domain_seed=3),
     ]
 
 def build_external_agents() -> List[ExternalAgentSpec]:
     return [
+        ExternalAgentSpec("Group3", "agent.Group3_Negotiator", "Group3_Negotiator", {}),
         ExternalAgentSpec("Group4", "agent.group4_negotiator", "Group4_Negotiator", {}),
         ExternalAgentSpec("Random", "negmas.sao", "RandomNegotiator", {}),
         ExternalAgentSpec("Linear", "negmas.sao", "LinearTBNegotiator", {}),
@@ -546,6 +546,8 @@ def main():
     parser.add_argument("--speed", type=float, default=1.0, help="UI Simulation speed. 0.05=Slow, >2.0=Multiprocessing")
     parser.add_argument("--workers", type=int, default=4, help="Max worker processes in multiprocessing mode")
     parser.add_argument("--rss-limit-gb", type=int, default=None, help="Hard RSS cap for this process (GB)")
+    parser.add_argument("--s-large", action="store_true", help="Enable larger scenario (5 issues, 80 values, 160 steps)")
+
     
     # Dynamic Tournament Arguments
     parser.add_argument("--dynamic", action="store_true", help="Use Swiss-Bandit dynamic tournament scheduling")
@@ -574,9 +576,12 @@ def main():
 
     scenarios = build_default_scenarios()
 
+    if args.s_large:
+        scenarios.append(ScenarioConfig(name="S_large", n_issues=5, n_values=80, n_steps=160, reserved_min=0.0, reserved_max=0.2, domain_seed=3))
+
     external_agents = filter_available_external_agents(build_external_agents(), console)
 
-    group37 = ExternalAgentSpec("Group37", "agent.Group37_Agent", "Group37Agent", {})
+    group37 = ExternalAgentSpec("Group37", "agent.Group37_Negotiator", "Group37_Negotiator", {})
 
     configs = [group37, *external_agents]
 
@@ -1221,8 +1226,6 @@ def main():
         df_raw = pd.DataFrame()
     else:
         df_raw = pd.read_csv(raw_csv_path)
-
-    make_tui_report(console, df_raw, stamp_dir)
 
     report_console = Console(record=True)
     make_tui_report(report_console, df_raw, stamp_dir)

@@ -30,24 +30,83 @@ class FrequencyAnalysisModel(OpponentModel):
     def __init__(self):
         self.offer_counts: Counter[Outcome] = Counter()
         self.total_offers = 0
+        self.offer_history: List[Outcome] = []
+        self.utility_history: List[float] = []
 
-    def update(self, offer: Outcome, state: SAOState):
+    def update(self, offer: Outcome, state: SAOState, ufun: Any = None):
         if offer is not None:
             self.offer_counts[offer] += 1
             self.total_offers += 1
+            self.offer_history.append(offer)
+            if ufun is not None:
+                try:
+                    self.utility_history.append(float(ufun(offer)))
+                except Exception:
+                    pass
 
     def get_most_frequent_offer(self) -> Optional[Outcome]:
-        """Return the opponent's most frequently offered outcome."""
         if not self.offer_counts:
             return None
         return self.offer_counts.most_common(1)[0][0]
 
     def get_offer_frequency(self, offer: Outcome) -> float:
-        """Return how often an outcome is offered (0.0..1.0)."""
         if self.total_offers == 0:
             return 0.0
         return self.offer_counts[offer] / self.total_offers
 
+    def estimate_utility(self, offer: Outcome) -> float:
+        if offer is None or self.total_offers == 0 or not isinstance(offer, tuple):
+            return 0.5
+
+        score = 0.0
+        for i, v in enumerate(offer):
+            value_freq = sum(c for o, c in self.offer_counts.items() if isinstance(o, tuple) and len(o) > i and o[i] == v)
+            score += (value_freq + 1) / (self.total_offers + len(self.offer_counts))
+
+        return max(0.0, min(1.0, score / len(offer)))
+
+    def _compute_slope(self, values: List[float]) -> float:
+        if len(values) < 2:
+            return 0.0
+        n = len(values)
+        xs = list(range(n))
+        x_mean = sum(xs) / n
+        y_mean = sum(values) / n
+        num = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, values))
+        den = sum((x - x_mean) ** 2 for x in xs)
+        if den == 0:
+            return 0.0
+        return num / den
+
+    def get_concession_rate(self) -> float:
+        if not self.utility_history:
+            return 0.0
+        slope = self._compute_slope(self.utility_history)
+        return max(0.0, min(1.0, slope / 0.05))
+
+    def get_opponent_type(self) -> str:
+        if not self.utility_history:
+            return "unknown"
+        slope = self._compute_slope(self.utility_history)
+        if slope > 0.02:
+            return "conceder"
+        if slope < -0.02:
+            return "hardliner"
+        return "balanced"
+
+    def predict_next_utility(self, ufun: Any, next_time: float) -> float:
+        if not self.utility_history:
+            return 0.5
+        if len(self.utility_history) == 1:
+            return self.utility_history[-1]
+        slope = self._compute_slope(self.utility_history)
+        return max(0.0, min(1.0, self.utility_history[-1] + slope))
+
+    def predict_concession_point(self, current_time: float) -> float:
+        rate = self.get_concession_rate()
+        if rate <= 0:
+            return 1.0
+        return max(0.0, min(1.0, current_time + (1.0 - current_time) * (1.0 - rate)))
 
 class BayesianUtilityModel(OpponentModel):
     """Estimates opponent utility using a simple Bayesian frequency model."""
