@@ -73,6 +73,13 @@ class TournamentConfig:
     base_seed: int = 2026
 
 @dataclass(frozen=True)
+class ExternalAgentSpec:
+    name: str
+    module: str
+    cls_name: str
+    params: Dict[str, Any]
+
+@dataclass(frozen=True)
 class StrategySpec:
     kind: str
     cls_name: str
@@ -301,6 +308,25 @@ def build_agent(cfg: AgentConfig, name: str):
         opponent_model=opp,
     )
 
+def build_external_agent(spec: ExternalAgentSpec, name: str):
+    try:
+        module_obj = importlib.import_module(spec.module)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to import external agent module '{spec.module}' for '{spec.name}'"
+        ) from exc
+
+    try:
+        cls = getattr(module_obj, spec.cls_name)
+    except AttributeError as exc:
+        raise RuntimeError(
+            f"External agent class '{spec.cls_name}' not found in '{spec.module}' for '{spec.name}'"
+        ) from exc
+
+    params = dict(spec.params)
+    params["name"] = name
+    return _instantiate(cls, params)
+
 def run_one_session(
     cfg_a: Any,
     cfg_b: Any,
@@ -314,6 +340,8 @@ def run_one_session(
     mech = SAOMechanism(issues=issues, n_steps=scenario.n_steps)
 
     def resolve_agent(cfg, name: str):
+        if isinstance(cfg, ExternalAgentSpec):
+            return build_external_agent(cfg, name)
         return build_agent(cfg, name=name)
 
 
@@ -468,6 +496,43 @@ def build_default_scenarios() -> List[ScenarioConfig]:
         ScenarioConfig(name="S_large", n_issues=5, n_values=80, n_steps=160, reserved_min=0.0, reserved_max=0.2, domain_seed=3),
     ]
 
+def build_external_agents() -> List[ExternalAgentSpec]:
+    return [
+        ExternalAgentSpec("Group4", "agent.group4_negotiator", "Group4_Negotiator", {}),
+        ExternalAgentSpec("Random", "negmas.sao", "RandomNegotiator", {}),
+        ExternalAgentSpec("Linear", "negmas.sao", "LinearTBNegotiator", {}),
+        ExternalAgentSpec("Boulware", "negmas.sao", "AspirationNegotiator", {"aspiration_type": "boulware"}),
+        ExternalAgentSpec("Conceder", "negmas.sao", "AspirationNegotiator", {"aspiration_type": "conceder"}),
+        ExternalAgentSpec("LinearAsp", "negmas.sao", "AspirationNegotiator", {"aspiration_type": "linear"}),
+        ExternalAgentSpec("Aspiration", "negmas.sao", "AspirationNegotiator", {}),
+        ExternalAgentSpec("Linear2", "negmas.sao", "LinearTBNegotiator", {}),
+    ]
+
+def filter_available_external_agents(
+    external_agents: List[ExternalAgentSpec],
+    console: Optional[Console] = None,
+) -> List[ExternalAgentSpec]:
+    available: List[ExternalAgentSpec] = []
+    skipped: List[Tuple[str, str]] = []
+    for spec in external_agents:
+        try:
+            module_obj = importlib.import_module(spec.module)
+            getattr(module_obj, spec.cls_name)
+        except Exception as exc:
+            skipped.append((spec.name, str(exc)))
+            continue
+        available.append(spec)
+
+    if console is not None and skipped:
+        details = "\n".join(f"- {name}: {reason}" for name, reason in skipped)
+        console.print(Panel.fit(
+            f"Skipping {len(skipped)} external agents (import failed):\n{details}",
+            title="External Agents Unavailable",
+            border_style="yellow",
+        ))
+
+    return available
+
 def main():
     import argparse
 
@@ -508,37 +573,17 @@ def main():
     console = Console(record=False)
 
     scenarios = build_default_scenarios()
-    acc_specs, bid_specs, opp_specs = discover_strategies()
 
-    opp_spec_lines = "\n".join(f"• {spec.label}" for spec in opp_specs)
-    console.print(Panel.fit(
-        f"Discovered Opponent Model Specs ({len(opp_specs)}):\n{opp_spec_lines}",
-        title="Opponent-Model Coverage", border_style="magenta"
-    ))
+    external_agents = filter_available_external_agents(build_external_agents(), console)
 
-    opponent_aware_acceptance = {"OpponentAwareAcceptance"}
-    opponent_aware_bidding = {"OpponentAwareBidding"}
+    group37 = ExternalAgentSpec("Group37", "agent.Group37_Agent", "Group37Agent", {})
 
-    no_opponent_model = next((spec for spec in opp_specs if spec.cls_name == "NoOpponentModel"), None)
-    if no_opponent_model is None and opp_specs:
-        no_opponent_model = opp_specs[0]
-
-    configs: List[Any] = []
-    for a in acc_specs:
-        for b in bid_specs:
-            is_opponent_aware = (a.cls_name in opponent_aware_acceptance) or (b.cls_name in opponent_aware_bidding)
-            if is_opponent_aware:
-                for o in opp_specs:
-                    configs.append(AgentConfig(a, b, o))
-            elif no_opponent_model is not None:
-                configs.append(AgentConfig(a, b, no_opponent_model))
+    configs = [group37, *external_agents]
 
     meta = {
         "tournament_config": asdict(tcfg),
         "scenarios": [asdict(s) for s in scenarios],
-        "n_acceptance_specs": len(acc_specs),
-        "n_bidding_specs": len(bid_specs),
-        "n_opponent_specs": len(opp_specs),
+        "n_external_agents": len(external_agents),
         "n_agent_configs": len(configs),
         "dynamic_mode": args.dynamic,
         "dynamic_reps": dynamic_reps,
@@ -550,10 +595,11 @@ def main():
     swaps_per_pair = 2 if tcfg.swap_sides else 1
     dynamic_mode_label = "Yes" if args.dynamic else "No"
     plan_details = (
-        f"Configs: {len(configs)}\n"
-        f"  - Acceptance specs: {len(acc_specs)}\n"
-        f"  - Bidding specs: {len(bid_specs)}\n"
-        f"  - Opponent specs: {len(opp_specs)}\n"
+        f"Configs: \n"
+        f"  - Acceptance: Hybrid\n"
+        f"  - Bidding specs: Opponent-Aware\n"
+        f"  - Opponent specs: Frequency Analysis\n"
+        f"  - External agents: {len(external_agents)}\n"
         f"Scenarios: {len(scenarios)} ({', '.join(s.name for s in scenarios)})\n"
         f"Base Seed: {tcfg.base_seed}\n"
         f"Dynamic Scheduling: {dynamic_mode_label}\n"
@@ -1016,7 +1062,6 @@ def main():
                 pause_scene_transition()
             
         else:
-            # DYNAMIC SWISS-BANDIT SYSTEM
             rng = random.Random(tcfg.base_seed)
             active_configs = configs[:]
             runtime_state["phase"] = "Dynamic Init"
@@ -1183,6 +1228,7 @@ def main():
     make_tui_report(report_console, df_raw, stamp_dir)
     report_console.save_text(os.path.join(stamp_dir, "tournament_report.txt"))
     console.print(Panel.fit(f"Wrote outputs to: {stamp_dir}", title="Done", border_style="bold green"))
+
 
 if __name__ == "__main__":
     main()
