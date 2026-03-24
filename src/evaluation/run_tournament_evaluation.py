@@ -581,7 +581,7 @@ def main():
 
     external_agents = filter_available_external_agents(build_external_agents(), console)
 
-    group37 = ExternalAgentSpec("Group37", "agent.Group37_Agent", "Group37Agent", {})
+    group37 = ExternalAgentSpec("Group37", "agent.Group37_Negotiator", "Group37_Negotiator", {})
 
     configs = [group37, *external_agents]
 

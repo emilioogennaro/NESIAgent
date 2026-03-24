@@ -1,9 +1,9 @@
 # type: ignore
 from typing import Optional, Any
 from negmas.sao import SAONegotiator, SAOResponse, ResponseType, SAOState
-from components.acceptance import AcceptanceStrategy, StaticThresholdAcceptance
-from components.bidding import BiddingStrategy, RandomAboveThresholdBidding
-from components.opponent_model import OpponentModel, NoOpponentModel
+from components.acceptance import AcceptanceStrategy, StaticThresholdAcceptance, HybridAcceptance
+from components.bidding import BiddingStrategy, RandomAboveThresholdBidding, OpponentAwareBidding
+from components.opponent_model import OpponentModel, NoOpponentModel, FrequencyAnalysisModel
 
 class Group37_Negotiator(SAONegotiator):
     """
@@ -11,15 +11,15 @@ class Group37_Negotiator(SAONegotiator):
     """
     
     def __init__(self, *args,
-                 bidding_strategy: Optional[BiddingStrategy] = None,
-                 acceptance_strategy: Optional[AcceptanceStrategy] = None,
-                 opponent_model: Optional[OpponentModel] = None,
+                 bidding_strategy = OpponentAwareBidding(opponent_model=FrequencyAnalysisModel()),
+                 acceptance_strategy = HybridAcceptance(),
+                 opponent_model = FrequencyAnalysisModel(),
                  **kwargs):
         super().__init__(*args, **kwargs)
         
-        self.bidding_strategy = bidding_strategy or RandomAboveThresholdBidding(threshold=0.9, opponent_model=opponent_model)
-        self.acceptance_strategy = acceptance_strategy or StaticThresholdAcceptance(threshold=0.8, opponent_model=opponent_model)
-        self.opponent_model = opponent_model or NoOpponentModel()
+        self.bidding_strategy = bidding_strategy
+        self.acceptance_strategy = acceptance_strategy
+        self.opponent_model = opponent_model
 
     def __call__(self, state: SAOState, *args: Any, **kwargs: Any) -> SAOResponse:
         """The main turn cycle called by the NegMAS framework."""
