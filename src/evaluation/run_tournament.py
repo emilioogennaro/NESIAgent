@@ -465,7 +465,6 @@ def build_default_scenarios() -> List[ScenarioConfig]:
     return [
         ScenarioConfig(name="S_small", n_issues=2, n_values=25, n_steps=80, reserved_min=0.0, reserved_max=0.2, domain_seed=1),
         ScenarioConfig(name="S_medium", n_issues=3, n_values=50, n_steps=120, reserved_min=0.0, reserved_max=0.2, domain_seed=2),
-        ScenarioConfig(name="S_large", n_issues=5, n_values=80, n_steps=160, reserved_min=0.0, reserved_max=0.2, domain_seed=3),
     ]
 
 def main():
@@ -481,6 +480,7 @@ def main():
     parser.add_argument("--speed", type=float, default=1.0, help="UI Simulation speed. 0.05=Slow, >2.0=Multiprocessing")
     parser.add_argument("--workers", type=int, default=4, help="Max worker processes in multiprocessing mode")
     parser.add_argument("--rss-limit-gb", type=int, default=None, help="Hard RSS cap for this process (GB)")
+    parser.add_argument("--s-large", action="store_true", help="Enable larger scenario (5 issues, 80 values, 160 steps)")
     
     # Dynamic Tournament Arguments
     parser.add_argument("--dynamic", action="store_true", help="Use Swiss-Bandit dynamic tournament scheduling")
@@ -508,6 +508,10 @@ def main():
     console = Console(record=False)
 
     scenarios = build_default_scenarios()
+
+    if args.s_large:
+        scenarios.append(ScenarioConfig(name="S_large", n_issues=5, n_values=80, n_steps=160, reserved_min=0.0, reserved_max=0.2, domain_seed=3))
+
     acc_specs, bid_specs, opp_specs = discover_strategies()
 
     opp_spec_lines = "\n".join(f"• {spec.label}" for spec in opp_specs)
