@@ -270,52 +270,121 @@ class AdaptiveAcceptance(AcceptanceStrategy):
         
         return offer_utility >= max(0.1, self.adapted_threshold)
 
+# class HybridAcceptance(AcceptanceStrategy): -> Old implementation, kept for reference
+#     """Hybrid acceptance strategy combining multiple factors.
+    
+#     This strategy uses a weighted combination of:
+#     1. Aspiration level (decreases over time)
+#     2. Opponent model (adapts to what they're offering)
+#     3. Time pressure (urgent acceptance as deadline approaches)
+    
+#     Offers are accepted if the weighted score exceeds 0.5, creating a
+#     balanced approach that considers multiple negotiation aspects.
+#     """
+    
+#     def __init__(self, aspiration_weight: float = 0.4, opponent_weight: float = 0.3, 
+#                  time_weight: float = 0.3):
+#         """
+#         Args:
+#             aspiration_weight: Weight of aspiration level
+#             opponent_weight: Weight of opponent modeling
+#             time_weight: Weight of time-based pressure
+#         """
+#         self.aspiration_weight = aspiration_weight
+#         self.opponent_weight = opponent_weight
+#         self.time_weight = time_weight
+#         self.opponent_utilities = []
+
+#     def evaluate(self, offer: Outcome, state: SAOState, ufun: UtilityFunction) -> bool:
+#         if offer is None:
+#             return False
+        
+#         offer_utility = ufun(offer)
+#         time_progress = state.relative_time if state.relative_time is not None else 0
+        
+#         aspiration_level = 0.3 + 0.7 * ((1 - time_progress) ** 1.5)
+#         aspiration_score = min(1.0, offer_utility / aspiration_level) if aspiration_level > 0 else 0
+        
+#         self.opponent_utilities.append(offer_utility)
+#         if len(self.opponent_utilities) > 1:
+#             avg_opponent_utility = sum(self.opponent_utilities) / len(self.opponent_utilities)
+#             opponent_score = min(1.0, avg_opponent_utility)
+#         else:
+#             opponent_score = 0.5 
+        
+#         time_score = 0.3 + 0.7 * time_progress
+        
+#         decision_score = (self.aspiration_weight * aspiration_score + 
+#                          self.opponent_weight * opponent_score + 
+#                          self.time_weight * time_score)
+        
+#         return decision_score >= 0.5
+
 class HybridAcceptance(AcceptanceStrategy):
-    """Hybrid acceptance strategy combining multiple factors.
-    
-    This strategy uses a weighted combination of:
-    1. Aspiration level (decreases over time)
-    2. Opponent model (adapts to what they're offering)
-    3. Time pressure (urgent acceptance as deadline approaches)
-    
-    Offers are accepted if the weighted score exceeds 0.5, creating a
-    balanced approach that considers multiple negotiation aspects.
+    """Improved hybrid acceptance strategy using:
+    - Aspiration level (time-dependent)
+    - Opponent model (via Nash product)
+    - Time pressure (deadline awareness)
     """
-    
-    def __init__(self, aspiration_weight: float = 0.4, opponent_weight: float = 0.3, 
-                 time_weight: float = 0.3):
-        """
-        Args:
-            aspiration_weight: Weight of aspiration level
-            opponent_weight: Weight of opponent modeling
-            time_weight: Weight of time-based pressure
-        """
+
+    def __init__(
+        self,
+        opponent_model,
+        aspiration_weight: float = 0.4,
+        opponent_weight: float = 0.3,
+        time_weight: float = 0.3,
+    ):
         self.aspiration_weight = aspiration_weight
         self.opponent_weight = opponent_weight
         self.time_weight = time_weight
-        self.opponent_utilities = []
+        self.opponent_model = opponent_model
+
+        self.past_utilities = []
 
     def evaluate(self, offer: Outcome, state: SAOState, ufun: UtilityFunction) -> bool:
         if offer is None:
             return False
-        
+
         offer_utility = ufun(offer)
-        time_progress = state.relative_time if state.relative_time is not None else 0
-        
+        time_progress = state.relative_time if state.relative_time is not None else 0.0
+
+        # 1. Aspiration 
         aspiration_level = 0.3 + 0.7 * ((1 - time_progress) ** 1.5)
-        aspiration_score = min(1.0, offer_utility / aspiration_level) if aspiration_level > 0 else 0
-        
-        self.opponent_utilities.append(offer_utility)
-        if len(self.opponent_utilities) > 1:
-            avg_opponent_utility = sum(self.opponent_utilities) / len(self.opponent_utilities)
-            opponent_score = min(1.0, avg_opponent_utility)
-        else:
-            opponent_score = 0.5 
-        
+        aspiration_score = min(1.0, offer_utility / aspiration_level) if aspiration_level > 0 else 0.0
+
+        # 2. Opponent modeling (Nash product)
+        try:
+            opponent_utility = self.opponent_model(offer)
+        except Exception:
+            opponent_utility = 0.5
+
+        nash_score = offer_utility * opponent_utility
+
+        # 3. Time pressure
         time_score = 0.3 + 0.7 * time_progress
-        
-        decision_score = (self.aspiration_weight * aspiration_score + 
-                         self.opponent_weight * opponent_score + 
-                         self.time_weight * time_score)
-        
+
+        # 4. Dynamic weights
+        aspiration_weight = self.aspiration_weight * (1 - time_progress)
+        time_weight = self.time_weight * time_progress
+        opponent_weight = self.opponent_weight
+
+        total = aspiration_weight + opponent_weight + time_weight
+        aspiration_weight /= total
+        opponent_weight /= total
+        time_weight /= total
+
+        decision_score = (
+            aspiration_weight * aspiration_score +
+            opponent_weight * nash_score +
+            time_weight * time_score
+        )
+
+        self.past_utilities.append(offer_utility)
+
+        # 5. Smart early acceptance
+        if len(self.past_utilities) > 5:
+            recent_max = max(self.past_utilities[-5:])
+            if offer_utility >= recent_max:
+                return True
+
         return decision_score >= 0.5
