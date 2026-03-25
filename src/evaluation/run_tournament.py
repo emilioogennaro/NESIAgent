@@ -1181,8 +1181,6 @@ def main():
     else:
         df_raw = pd.read_csv(raw_csv_path)
 
-    make_tui_report(console, df_raw, stamp_dir)
-
     report_console = Console(record=True)
     make_tui_report(report_console, df_raw, stamp_dir)
     report_console.save_text(os.path.join(stamp_dir, "tournament_report.txt"))
