@@ -16,7 +16,7 @@ import csv
 import subprocess
 from collections import deque
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Iterable, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 RAM_HARD_LIMIT_GB: Optional[int] = None
 
@@ -125,22 +125,6 @@ def _stable_hash_mod(text: str, mod: int) -> int:
         raise ValueError("mod must be > 0")
     digest = hashlib.sha256(text.encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "big") % mod
-
-def _get_total_ram_gb() -> Optional[int]:
-    try:
-        if sys.platform == "darwin":
-            result = subprocess.run(
-                ["sysctl", "-n", "hw.memsize"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            bytes_total = int(result.stdout.strip())
-        else:
-            bytes_total = int(os.sysconf("SC_PAGE_SIZE")) * int(os.sysconf("SC_PHYS_PAGES"))
-        return max(1, int(bytes_total // (1024 ** 3)))
-    except Exception:
-        return None
 
 def _get_process_rss_gb(pid: int) -> Optional[float]:
     try:
