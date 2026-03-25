@@ -119,76 +119,123 @@ class RandomAboveThresholdBidding(BiddingStrategy):
         return ufun.extreme_outcomes()[1]
 
 
+# class OpponentAwareBidding(BiddingStrategy): -> Old implementation, kept for reference
+#     """Bidding strategy that adapts based on opponent modeling information.
+    
+#     Adjusts bidding behavior based on opponent type and behavior patterns.
+#     Against hardliners: concedes more slowly to pressure them.
+#     Against conceders: concedes faster to reach agreement sooner.
+#     """
+    
+#     def __init__(self, base_threshold: float = 0.9, opponent_model: Optional[OpponentModel] = None):
+#         super().__init__(opponent_model)
+#         self.base_threshold = base_threshold
+    
+#     def generate(self, state: SAOState, ufun: UtilityFunction, nmi: Any) -> Optional[Outcome]:
+#         # Always propose the absolute best outcome on the first step
+#         if state.step == 0:
+#             return ufun.extreme_outcomes()[1]
+
+#         threshold = self.base_threshold
+        
+#         # Adjust threshold based on opponent model
+#         if self.opponent_model:
+#             if hasattr(self.opponent_model, 'get_opponent_type'):
+#                 opponent_type = self.opponent_model.get_opponent_type()
+#                 if opponent_type == "hardliner":
+#                     threshold += 0.1
+#                 elif opponent_type == "conceder":
+#                     threshold -= 0.1
+
+#             if hasattr(self.opponent_model, 'get_concession_rate'):
+#                 concession_rate = self.opponent_model.get_concession_rate()
+#                 if concession_rate < 0.3:
+#                     threshold += 0.05
+
+#             if hasattr(self.opponent_model, 'get_offer_frequency') and state.current_offer is not None:
+#                 frequency = self.opponent_model.get_offer_frequency(state.current_offer)
+#                 if frequency > 0.4:
+#                     threshold += 0.05
+
+#             if hasattr(self.opponent_model, 'estimate_utility') and state.current_offer is not None:
+#                 est = self.opponent_model.estimate_utility(state.current_offer)
+#                 if est > 0.8:
+#                     threshold += 0.05
+#                 elif est < 0.3:
+#                     threshold -= 0.05
+
+#             if hasattr(self.opponent_model, 'predict_next_utility'):
+#                 next_time = min(1.0, (state.relative_time or 0.0) + 0.05)
+#                 predicted = self.opponent_model.predict_next_utility(ufun, next_time)
+#                 if predicted > 0.8:
+#                     threshold += 0.05
+#                 elif predicted < 0.3:
+#                     threshold -= 0.05
+
+#             if hasattr(self.opponent_model, 'predict_concession_point'):
+#                 next_concession = self.opponent_model.predict_concession_point(state.relative_time)
+#                 if next_concession < 0.8:
+#                     threshold -= 0.05
+        
+#         threshold = max(float(ufun.reserved_value), min(0.98, threshold))
+        
+#         target_threshold = max(float(ufun.reserved_value), threshold)
+
+#         # Attempt to find a random outcome that meets the threshold
+#         for _ in range(1000):
+#             candidate = nmi.random_outcome()
+#             if float(ufun(candidate)) >= target_threshold:
+#                 return candidate
+                
+#         return ufun.extreme_outcomes()[1]
+
 class OpponentAwareBidding(BiddingStrategy):
-    """Bidding strategy that adapts based on opponent modeling information.
-    
-    Adjusts bidding behavior based on opponent type and behavior patterns.
-    Against hardliners: concedes more slowly to pressure them.
-    Against conceders: concedes faster to reach agreement sooner.
-    """
-    
     def __init__(self, base_threshold: float = 0.9, opponent_model: Optional[OpponentModel] = None):
         super().__init__(opponent_model)
         self.base_threshold = base_threshold
-    
+
     def generate(self, state: SAOState, ufun: UtilityFunction, nmi: Any) -> Optional[Outcome]:
-        # Always propose the absolute best outcome on the first step
+        # First move - the best possible one
         if state.step == 0:
             return ufun.extreme_outcomes()[1]
 
-        threshold = self.base_threshold
-        
-        # Adjust threshold based on opponent model
-        if self.opponent_model:
-            if hasattr(self.opponent_model, 'get_opponent_type'):
-                opponent_type = self.opponent_model.get_opponent_type()
-                if opponent_type == "hardliner":
-                    threshold += 0.1
-                elif opponent_type == "conceder":
-                    threshold -= 0.1
+        time_progress = state.relative_time or 0.0
 
-            if hasattr(self.opponent_model, 'get_concession_rate'):
-                concession_rate = self.opponent_model.get_concession_rate()
-                if concession_rate < 0.3:
-                    threshold += 0.05
+        # Dynamic concession instead of static threshold
+        threshold = self.base_threshold * (1 - time_progress**1.5)
 
-            if hasattr(self.opponent_model, 'get_offer_frequency') and state.current_offer is not None:
-                frequency = self.opponent_model.get_offer_frequency(state.current_offer)
-                if frequency > 0.4:
-                    threshold += 0.05
-
-            if hasattr(self.opponent_model, 'estimate_utility') and state.current_offer is not None:
-                est = self.opponent_model.estimate_utility(state.current_offer)
-                if est > 0.8:
-                    threshold += 0.05
-                elif est < 0.3:
-                    threshold -= 0.05
-
-            if hasattr(self.opponent_model, 'predict_next_utility'):
-                next_time = min(1.0, (state.relative_time or 0.0) + 0.05)
-                predicted = self.opponent_model.predict_next_utility(ufun, next_time)
-                if predicted > 0.8:
-                    threshold += 0.05
-                elif predicted < 0.3:
-                    threshold -= 0.05
-
-            if hasattr(self.opponent_model, 'predict_concession_point'):
-                next_concession = self.opponent_model.predict_concession_point(state.relative_time)
-                if next_concession < 0.8:
-                    threshold -= 0.05
-        
         threshold = max(float(ufun.reserved_value), min(0.98, threshold))
-        
-        target_threshold = max(float(ufun.reserved_value), threshold)
 
-        # Attempt to find a random outcome that meets the threshold
-        for _ in range(1000):
+        best_candidate = None
+        best_score = -1.0
+
+        for _ in range(300):
             candidate = nmi.random_outcome()
-            if float(ufun(candidate)) >= target_threshold:
-                return candidate
-                
-        return ufun.extreme_outcomes()[1]
+            my_util = float(ufun(candidate))
 
+            if my_util < threshold:
+                continue
+
+            # Use opponent model properly
+            if self.opponent_model and hasattr(self.opponent_model, "estimate_utility"):
+                try:
+                    opp_util = self.opponent_model.estimate_utility(candidate)
+                except Exception:
+                    opp_util = 0.5
+            else:
+                opp_util = 0.5
+
+            # Nash product 
+            score = my_util * opp_util
+
+            if score > best_score:
+                best_score = score
+                best_candidate = candidate
+
+        if best_candidate:
+            return best_candidate
+
+        return ufun.extreme_outcomes()[1]
 
 class LinearBidding(TimeBasedBiddingStrategy):
     def get_concession_factor(self, progress: float) -> float:

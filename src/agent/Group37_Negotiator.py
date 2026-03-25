@@ -19,7 +19,7 @@ class Group37_Negotiator(SAONegotiator):
 
         self.opponent_model = opponent_model or FrequencyAnalysisModel()
         self.bidding_strategy = bidding_strategy or OpponentAwareBidding(opponent_model=self.opponent_model)
-        self.acceptance_strategy = acceptance_strategy or HybridAcceptance()
+        self.acceptance_strategy = acceptance_strategy or HybridAcceptance(opponent_model=self.opponent_model)
 
     def __call__(self, state: SAOState, *args: Any, **kwargs: Any) -> SAOResponse:
         """The main turn cycle called by the NegMAS framework."""
