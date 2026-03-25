@@ -40,12 +40,6 @@ class AspirationalAcceptance(AcceptanceStrategy):
     
     def __init__(self, ideal_utility: float = 1.0, reservation_utility: float = 0.3, 
                  gamma: float = 2.0):
-        """
-        Args:
-            ideal_utility: The best possible utility
-            reservation_utility: The minimum acceptable utility
-            gamma: Concession parameter
-        """
         self.ideal_utility = ideal_utility
         self.reservation_utility = reservation_utility
         self.gamma = gamma
@@ -64,10 +58,8 @@ class AspirationalAcceptance(AcceptanceStrategy):
 
 
 class OpponentAwareAcceptance(AcceptanceStrategy):
-    """Acceptance strategy that adapts based on opponent modeling information.
-    
-    Uses opponent model to predict opponent behavior and adjust acceptance threshold.
-    Becomes more lenient against hardliners and more demanding against conceders.
+    """
+    Acceptance strategy that adapts based on opponent modeling information.
     """
     
     def __init__(self, base_threshold: float = 0.8, opponent_model: Optional[OpponentModel] = None):
@@ -148,10 +140,8 @@ class AspirationalAcceptance_Proposed(AcceptanceStrategy):
 
         current_utility = ufun(offer)
 
-        # Utilities of our past offers
         our_utils = [ufun(o) for o in our_offers if o is not None]
 
-        # Include next planned offer
         if next_offer is not None:
             our_utils.append(ufun(next_offer))
 
@@ -168,17 +158,9 @@ class ProgressBasedAcceptance(AcceptanceStrategy):
     An offer is only accepted if it either:
     1. Exceeds a minimum threshold, OR
     2. Represents a significant improvement (progress) over the best previous offer
-    
-    This prevents the agent from accepting stagnant negotiations and encourages
-    the opponent to improve their offers.
     """
     
     def __init__(self, min_threshold: float = 0.5, progress_ratio: float = 1.02):
-        """
-        Args:
-            min_threshold: Minimum utility to accept (hard floor)
-            progress_ratio: Each acceptable offer must be at least this factor   better than the previous best (e.g., 1.02 = 2% improvement required)
-        """
         self.min_threshold = min_threshold
         self.progress_ratio = progress_ratio
         self.best_offer_utility = None
@@ -209,11 +191,6 @@ class TimeBasedConcessionAcceptance(AcceptanceStrategy):
     """
     
     def __init__(self, initial_threshold: float = 0.9, final_threshold: float = 0.4):
-        """
-        Args:
-            initial_threshold: Minimum utility to accept at the start
-            final_threshold: Minimum utility to accept near the deadline
-        """
         self.initial_threshold = initial_threshold
         self.final_threshold = final_threshold
 
@@ -243,11 +220,6 @@ class AdaptiveAcceptance(AcceptanceStrategy):
     """
     
     def __init__(self, base_threshold: float = 0.6, learning_rate: float = 0.1):
-        """
-        Args:
-            base_threshold: Initial acceptance threshold
-            learning_rate: How quickly to adapt to opponent's behavior (0-1)
-        """
         self.base_threshold = base_threshold
         self.learning_rate = learning_rate
         self.opponent_offer_history = []
@@ -261,7 +233,6 @@ class AdaptiveAcceptance(AcceptanceStrategy):
         
         self.opponent_offer_history.append(offer_utility)
         
-        # Adapt threshold based on opponent's average performance
         if len(self.opponent_offer_history) > 1:
             avg_opponent_utility = sum(self.opponent_offer_history) / len(self.opponent_offer_history)
             time_progress = state.relative_time if state.relative_time is not None else 0
@@ -284,12 +255,6 @@ class HybridAcceptance(AcceptanceStrategy):
     
     def __init__(self, aspiration_weight: float = 0.4, opponent_weight: float = 0.3, 
                  time_weight: float = 0.3):
-        """
-        Args:
-            aspiration_weight: Weight of aspiration level
-            opponent_weight: Weight of opponent modeling
-            time_weight: Weight of time-based pressure
-        """
         self.aspiration_weight = aspiration_weight
         self.opponent_weight = opponent_weight
         self.time_weight = time_weight
