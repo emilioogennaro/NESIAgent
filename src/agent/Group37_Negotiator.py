@@ -11,15 +11,15 @@ class Group37_Negotiator(SAONegotiator):
     """
     
     def __init__(self, *args,
-                 bidding_strategy = OpponentAwareBidding(opponent_model=FrequencyAnalysisModel()),
-                 acceptance_strategy = HybridAcceptance(),
-                 opponent_model = FrequencyAnalysisModel(),
-                 **kwargs):
+             bidding_strategy=None,
+             acceptance_strategy=None,
+             opponent_model=None,
+             **kwargs):
         super().__init__(*args, **kwargs)
-        
-        self.bidding_strategy = bidding_strategy
-        self.acceptance_strategy = acceptance_strategy
-        self.opponent_model = opponent_model
+
+        self.opponent_model = opponent_model or FrequencyAnalysisModel()
+        self.bidding_strategy = bidding_strategy or OpponentAwareBidding(opponent_model=self.opponent_model)
+        self.acceptance_strategy = acceptance_strategy or HybridAcceptance(opponent_model=self.opponent_model)
 
     def __call__(self, state: SAOState, *args: Any, **kwargs: Any) -> SAOResponse:
         """The main turn cycle called by the NegMAS framework."""
