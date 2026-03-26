@@ -321,7 +321,7 @@ def run_one_session(
     issues, ufun1, ufun2 = make_scenario_domain(scenario, seed)
     ufun_a, ufun_b = (ufun2, ufun1) if swap_ufuns else (ufun1, ufun2)
 
-    mech = SAOMechanism(issues=issues, n_steps=scenario.n_steps)
+    mech = SAOMechanism(issues=issues, n_steps=scenario.n_steps, time_limit=30, negotiator_time_limit=30, step_time_limit=30)
 
     def resolve_agent(cfg, name: str):
         if isinstance(cfg, ExternalAgentSpec):
@@ -333,28 +333,11 @@ def run_one_session(
     agent_b = resolve_agent(cfg_b, "AgentB")
 
     mech.add(agent_a, ufun=ufun_a)
-    # Run the mechanism
-    import signal
-    import time
+    mech.add(agent_b, ufun=ufun_b)
     
-    class TimeoutException(Exception):
-        pass
-    
-    def timeout_handler(signum, frame):
-        raise TimeoutException()
-        
-    signal.signal(signal.SIGALRM, timeout_handler)
-    signal.alarm(30)
-    
-    try:
-        state = mech.run()
-        signal.alarm(0)
-    except TimeoutException:
-        print(f"Match between {agent_a.name} and {agent_b.name} timed out after 30 seconds.")
-        # Consider it a breakdown
-        from negmas.sao import SAOState
-        state = SAOState(running=False, agreement=None, step=mech.state.step, time=mech.state.time)
+    state = mech.run()
 
+    agreement = state.agreement
 
     ua = float(cast(float, ufun_a(agreement))) if agreement is not None else float(cast(float, ufun_a.reserved_value))
     ub = float(cast(float, ufun_b(agreement))) if agreement is not None else float(cast(float, ufun_b.reserved_value))

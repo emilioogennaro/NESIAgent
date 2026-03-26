@@ -294,7 +294,7 @@ def run_one_session(
     issues, ufun1, ufun2 = make_scenario_domain(scenario, seed)
     ufun_a, ufun_b = (ufun2, ufun1) if swap_ufuns else (ufun1, ufun2)
 
-    mech = SAOMechanism(issues=issues, n_steps=scenario.n_steps)
+    mech = SAOMechanism(issues=issues, n_steps=scenario.n_steps, time_limit=30, negotiator_time_limit=30, step_time_limit=30)
 
     def resolve_agent(cfg, name: str):
         return build_agent(cfg, name=name)
@@ -305,8 +305,9 @@ def run_one_session(
 
     mech.add(agent_a, ufun=ufun_a)
     mech.add(agent_b, ufun=ufun_b)
-
+    
     state = mech.run()
+
     agreement = state.agreement
 
     ua = float(cast(float, ufun_a(agreement))) if agreement is not None else float(cast(float, ufun_a.reserved_value))
