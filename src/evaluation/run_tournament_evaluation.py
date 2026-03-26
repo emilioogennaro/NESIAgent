@@ -317,11 +317,12 @@ def run_one_session(
     scenario: ScenarioConfig,
     seed: int,
     swap_ufuns: bool,
+    timeout: int,
 ) -> Dict[str, Any]:
     issues, ufun1, ufun2 = make_scenario_domain(scenario, seed)
     ufun_a, ufun_b = (ufun2, ufun1) if swap_ufuns else (ufun1, ufun2)
 
-    mech = SAOMechanism(issues=issues, n_steps=scenario.n_steps, time_limit=30, negotiator_time_limit=30, step_time_limit=30)
+    mech = SAOMechanism(issues=issues, n_steps=scenario.n_steps, time_limit=timeout, negotiator_time_limit=timeout, step_time_limit=timeout)
 
     def resolve_agent(cfg, name: str):
         if isinstance(cfg, ExternalAgentSpec):
@@ -532,7 +533,7 @@ def main():
     parser.add_argument("--workers", type=int, default=4, help="Max worker processes in multiprocessing mode")
     parser.add_argument("--rss-limit-gb", type=int, default=None, help="Hard RSS cap for this process (GB)")
     parser.add_argument("--s-large", action="store_true", help="Enable larger scenario (5 issues, 80 values, 160 steps)")
-
+    parser.add_argument("--timeout", type=int, default=30, help="Match timeout limit in seconds")
     
     # Dynamic Tournament Arguments
     parser.add_argument("--dynamic", action="store_true", help="Use Swiss-Bandit dynamic tournament scheduling")
@@ -1035,7 +1036,7 @@ def main():
                         swaps = (False, True) if tcfg.swap_sides else (False,)
                         for swap in swaps:
                             seed = duel_seed + 1000 * r + (1 if swap else 0)
-                            tasks.append((cfg_a, cfg_b, scenario, seed, swap))
+                            tasks.append((cfg_a, cfg_b, scenario, seed, swap, args.timeout))
                 phase_total = len(tasks)
                 if phase_task_id is None:
                     phase_task_id = phase_progress.add_task(
@@ -1107,7 +1108,7 @@ def main():
                         swaps = (False, True) if tcfg.swap_sides else (False,)
                         for _rep in range(dynamic_reps):
                             for swap in swaps:
-                                grace_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap))
+                                grace_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap, args.timeout))
                                 if len(grace_tasks) >= batch_size:
                                     run_task_batch(grace_tasks, executor, overall_task_id, scenario_utils, False)
                                     grace_tasks.clear()
@@ -1117,7 +1118,7 @@ def main():
                         swaps = (False, True) if tcfg.swap_sides else (False,)
                         for _rep in range(dynamic_reps):
                             for swap in swaps:
-                                grace_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap))
+                                grace_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap, args.timeout))
                                 if len(grace_tasks) >= batch_size:
                                     run_task_batch(grace_tasks, executor, overall_task_id, scenario_utils, False)
                                     grace_tasks.clear()
@@ -1180,7 +1181,7 @@ def main():
                         swaps = (False, True) if tcfg.swap_sides else (False,)
                         for _rep in range(dynamic_reps):
                             for swap in swaps:
-                                swiss_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap))
+                                swiss_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap, args.timeout))
                                 if len(swiss_tasks) >= batch_size:
                                     run_task_batch(swiss_tasks, executor, overall_task_id, scenario_utils, False)
                                     swiss_tasks.clear()
@@ -1190,7 +1191,7 @@ def main():
                         swaps = (False, True) if tcfg.swap_sides else (False,)
                         for _rep in range(dynamic_reps):
                             for swap in swaps:
-                                swiss_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap))
+                                swiss_tasks.append((c1, c2, scenario, rng.randint(0, 999999), swap, args.timeout))
                                 if len(swiss_tasks) >= batch_size:
                                     run_task_batch(swiss_tasks, executor, overall_task_id, scenario_utils, False)
                                     swiss_tasks.clear()
