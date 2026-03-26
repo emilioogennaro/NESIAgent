@@ -333,10 +333,28 @@ def run_one_session(
     agent_b = resolve_agent(cfg_b, "AgentB")
 
     mech.add(agent_a, ufun=ufun_a)
-    mech.add(agent_b, ufun=ufun_b)
+    # Run the mechanism
+    import signal
+    import time
+    
+    class TimeoutException(Exception):
+        pass
+    
+    def timeout_handler(signum, frame):
+        raise TimeoutException()
+        
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(30)
+    
+    try:
+        state = mech.run()
+        signal.alarm(0)
+    except TimeoutException:
+        print(f"Match between {agent_a.name} and {agent_b.name} timed out after 30 seconds.")
+        # Consider it a breakdown
+        from negmas.sao import SAOState
+        state = SAOState(running=False, agreement=None, step=mech.state.step, time=mech.state.time)
 
-    state = mech.run()
-    agreement = state.agreement
 
     ua = float(cast(float, ufun_a(agreement))) if agreement is not None else float(cast(float, ufun_a.reserved_value))
     ub = float(cast(float, ufun_b(agreement))) if agreement is not None else float(cast(float, ufun_b.reserved_value))
@@ -860,6 +878,10 @@ def main():
         if runtime_state["completed_matches"] % 100 == 0:
             raw_file.flush()
 
+    def log_feed(msg: str):
+        with feed_lock:
+            feed_messages.append(msg)
+
     def update_ui_state(row: Dict[str, Any], task_id: TaskID):
         runtime_state["completed_matches"] += 1
         runtime_state["sum_welfare"] += float(row["welfare_sum"])
@@ -889,9 +911,7 @@ def main():
             runtime_state["last_result"] = "Timeout / Walkaway"
         
         feed_text = f"[dim][{row['scenario']}][/]\n{status}\n{short_name(row['cfg_a'])} vs {short_name(row['cfg_b'])}\n"
-        
-        with feed_lock:
-            feed_messages.append(feed_text)
+        log_feed(feed_text)
             
         if phase_task_id is not None:
             phase_progress.advance(phase_task_id, 1)
@@ -935,7 +955,7 @@ def main():
                         update_ui_state(row, task_id)
 
                     except concurrent.futures.TimeoutError:
-                        feed_messages.append("⏰ [red]Match Timeout[/red]")
+                        log_feed("⏰ [red]Match Timeout[/red]")
                         if phase_task_id is not None:
                             phase_progress.advance(phase_task_id, 1)
                             completed = float(phase_progress.tasks[phase_task_id].completed or 0)
@@ -944,7 +964,7 @@ def main():
                             overall_progress.update(task_id, completed=overall_completed)
 
                     except Exception as e:
-                        feed_messages.append(f"⚠️ [red]Match Error: {str(e)}[/red]")
+                        log_feed(f"⚠️ [red]Match Error: {str(e)}[/red]")
                         if phase_task_id is not None:
                             phase_progress.advance(phase_task_id, 1)
                             completed = float(phase_progress.tasks[phase_task_id].completed or 0)
@@ -1023,7 +1043,7 @@ def main():
                     break
                 runtime_state["scenario"] = scenario.name
                 runtime_state["phase"] = "Static Scenario"
-                feed_messages.append(f"📍 [bold cyan]Static Scenario: {scenario.name}[/]")
+                log_feed(f"📍 [bold cyan]Static Scenario: {scenario.name}[/]")
                 pause_scene_transition()
                 tasks = []
                 for i, (cfg_a, cfg_b) in enumerate(pairs):
@@ -1070,14 +1090,14 @@ def main():
                 runtime_state["phase"] = "Scenario Escalation"
                 runtime_state["alive_agents"] = len(active_configs)
                 runtime_state["current_round"] = "Escalation"
-                feed_messages.append(f"🏁 [bold magenta]Escalating to Scenario: {scenario.name}[/]")
+                log_feed(f"🏁 [bold magenta]Escalating to Scenario: {scenario.name}[/]")
                 pause_scene_transition()
                 scenario_utils = {c.name: [] for c in active_configs}
                 batch_size = 200
                 
                 runtime_state["phase"] = "Grace Period"
                 runtime_state["current_round"] = "Grace"
-                feed_messages.append(f"⚖️ [blue]Grace Period ({args.grace_matches} matches each)[/]")
+                log_feed(f"⚖️ [blue]Grace Period ({args.grace_matches} matches each)[/]")
                 pause_scene_transition()
                 pairings = (len(active_configs) // 2) + (1 if len(active_configs) % 2 != 0 else 0)
                 phase_total = args.grace_matches * pairings * swaps_per_pair * dynamic_reps
@@ -1142,7 +1162,7 @@ def main():
                             survivors.append(c)
                         else:
                             pruned_this_round += 1
-                            feed_messages.append(f"✂️ [red]Pruned[/] {short_name(c.name)} (UCB:{ucb:.2f} < {max_lcb:.2f})")
+                            log_feed(f"✂️ [red]Pruned[/] {short_name(c.name)} (UCB:{ucb:.2f} < {max_lcb:.2f})")
                             
                     active_configs = survivors
                     runtime_state["alive_agents"] = len(active_configs)
@@ -1153,7 +1173,7 @@ def main():
                         
                     runtime_state["phase"] = f"Swiss Round {round_idx + 1}"
                     runtime_state["current_round"] = str(round_idx + 1)
-                    feed_messages.append(f"⚔️ [bold blue]Swiss Round {round_idx+1}[/] ({len(active_configs)} survivors)")
+                    log_feed(f"⚔️ [bold blue]Swiss Round {round_idx+1}[/] ({len(active_configs)} survivors)")
                     pause_scene_transition()
                     pairings = (len(active_configs) // 2) + (1 if len(active_configs) % 2 != 0 else 0)
                     phase_total = pairings * swaps_per_pair * dynamic_reps
