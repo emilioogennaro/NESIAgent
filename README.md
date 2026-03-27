@@ -91,6 +91,7 @@ python src/evaluation/run_tournament.py --reps 5 --workers 8 --seed 1234
 | `--no-swap` | flag | - | Disable swapping utility assignments (test agents only in one role) |
 | `--self-play` | flag | - | Include agents playing against themselves |
 | `--max-pairs` | int | `None` | Cap the maximum number of pairings (useful for testing) |
+| `--timeout` | int | `30` | Limits the duration of a match up to a particular number of seconds. |
 
 ### Scenario Configuration
 
